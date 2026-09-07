@@ -1,14 +1,14 @@
 name: Run-checker CI
 
 on:
-  push:
+  pull_request:
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: idric-tls-diagnostic-${{ github.ref }}
+  group: idric-tls-diagnostic-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -18,7 +18,7 @@ jobs:
       - name: Checkout exact diagnostic head
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Checkout pinned Idriç compiler
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683

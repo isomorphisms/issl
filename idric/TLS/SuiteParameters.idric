@@ -46,7 +46,9 @@ parameters_for_suite tls_aes_128_ccm_8_sha256 =
 
 public export
 suite_hash_algorithm : tls13_cipher_suite → tls13_hash_algorithm
-suite_hash_algorithm suite = (parameters_for_suite suite).suite_hash
+suite_hash_algorithm suite =
+  case parameters_for_suite suite of
+    MkSuiteParameters _ algorithm _ _ _ => algorithm
 
 public export
 suite_hash_length : tls13_cipher_suite → ℕ

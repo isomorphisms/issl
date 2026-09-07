@@ -27,6 +27,10 @@ signature_algorithms_code : Bits16
 signature_algorithms_code = 13
 
 public export
+signature_algorithms_cert_code : Bits16
+signature_algorithms_cert_code = 50
+
+public export
 supported_groups_code : Bits16
 supported_groups_code = 10
 
@@ -53,6 +57,11 @@ take_bytes_exact (S remaining) (byte :: rest) =
     Nothing => Nothing
     Just (taken, trailing) => Just (byte :: taken, trailing)
 
+extension_code_present : Bits16 → List tls_extension → Bool
+extension_code_present wanted [] = False
+extension_code_present wanted (extension :: rest) =
+  extension.extension_type_code == wanted || extension_code_present wanted rest
+
 parse_extension_entries_with_fuel :
   ℕ →
   List Bits8 →
@@ -63,17 +72,18 @@ parse_extension_entries_with_fuel 0 _ =
 parse_extension_entries_with_fuel
   (S fuel)
   (type_high :: type_low :: length_high :: length_low :: rest) =
-    let data_length : ℕ = cast (wire_u16 length_high length_low) in
+    let data_length : ℕ = cast (wire_u16 length_high length_low)
+        extension_code = wire_u16 type_high type_low in
       case take_bytes_exact data_length rest of
         Nothing => Left "TLS extension data is truncated"
         Just (data_bytes, trailing) =>
           case parse_extension_entries_with_fuel fuel trailing of
             Left problem => Left problem
             Right extensions =>
-              Right
-                (MkTlsExtension
-                  (wire_u16 type_high type_low)
-                  data_bytes :: extensions)
+              if extension_code_present extension_code extensions
+                then Left "TLS extension block contains a duplicate extension type"
+                else Right
+                  (MkTlsExtension extension_code data_bytes :: extensions)
 parse_extension_entries_with_fuel (S _) _ =
   Left "TLS extension header is truncated"
 

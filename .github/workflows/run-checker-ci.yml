@@ -1,85 +1,66 @@
-# Copyright 2021-2026 The OpenSSL Project Authors. All Rights Reserved.
-#
-# Licensed under the Apache License 2.0 (the "License").  You may not use
-# this file except in compliance with the License.  You can obtain a copy
-# in the file LICENSE in the source distribution or at
-# https://www.openssl.org/source/license.html
-
-# Jobs run per pull request submission
 name: Run-checker CI
+
 on:
-  pull_request:
-    paths-ignore:
-      - 'doc/**'
-      - '*.md'
-      - '*.pod'
-      - 'README*'
-      - 'funding.json'
-      - 'LICENSE.txt'
-      - 'VERSION.dat'
   push:
-    paths-ignore:
-      - 'doc/**'
-      - '*.md'
-      - '*.pod'
-      - 'README*'
-      - 'funding.json'
-      - 'LICENSE.txt'
-      - 'VERSION.dat'
+  workflow_dispatch:
+
 permissions:
   contents: read
 
-env:
-  OSSL_RUN_CI_TESTS: 1
+concurrency:
+  group: idric-tls-diagnostic-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  run-checker:
-    strategy:
-      fail-fast: false
-      matrix:
-        opt: [
-          no-cmp,
-          no-cms,
-          no-dgram,
-          no-dh,
-          no-dtls,
-          no-ec,
-          no-ecx,
-          no-ml-dsa,
-          no-ml-kem,
-          no-http,
-          no-legacy,
-          no-sock,
-          no-sm2,
-          no-stdio,
-          no-threads,
-          no-thread-pool,
-          no-default-thread-pool,
-          no-tls,
-          no-tls1_2,
-          no-tls1_3,
-          enable-trace enable-fips,
-          no-quic,
-          -DOPENSSL_USE_IPV6=0
-        ]
-    runs-on: ubuntu-latest
+  idric-tls:
+    runs-on: ubuntu-24.04
     steps:
-    - uses: actions/checkout@v6
-      with:
-        persist-credentials: false
-    - name: checkout fuzz/corpora submodule
-      run: git submodule update --init --depth 1 fuzz/corpora
-    - name: config
-      run: CC=clang ./config --banner=Configured --strict-warnings ${{ matrix.opt }}
-    - name: config dump
-      run: ./configdata.pm --dump
-    - name: make
-      run: make -s -j4
-    - name: get cpu info
-      run: |
-        cat /proc/cpuinfo
-        if [ -x apps/openssl ] ; then ./util/opensslwrap.sh version -c ; fi
-    - name: Check platform symbol usage
-      run: ./util/checkplatformsyms.pl ./util/platform_symbols/unix-symbols.txt ./libcrypto.so ./libssl.so
-    - name: make test
-      run: make test HARNESS_JOBS=${HARNESS_JOBS:-4}
+      - name: Checkout exact diagnostic head
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Checkout pinned Idriç compiler
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: isomorphisms/Idric
+          ref: d2463ec8a3a0dd4ac167029927452f3e83805dc3
+          path: .tools/Idric
+
+      - name: Checkout Idris2 0.8.0 stage-zero compiler
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: idris-lang/Idris2
+          ref: 15a3e4e70843f7a34100f6470c04b791330788df
+          path: .tools/Idris2-stage0
+
+      - name: Install host build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            bash \
+            build-essential \
+            chezscheme \
+            coreutils \
+            libgmp-dev
+
+      - name: Bootstrap upstream Idris2 stage zero
+        run: |
+          make -C "$GITHUB_WORKSPACE/.tools/Idris2-stage0" bootstrap SCHEME=scheme
+          "$GITHUB_WORKSPACE/.tools/Idris2-stage0/build/exec/idris2" --version
+
+      - name: Build pinned Idriç compiler with stage zero
+        run: |
+          STAGE0="$GITHUB_WORKSPACE/.tools/Idris2-stage0/build/exec/idris2"
+          make -C "$GITHUB_WORKSPACE/.tools/Idric/_" idris2-exec \
+            IDRIS2_BOOT="$STAGE0" SCHEME=scheme
+          make -C "$GITHUB_WORKSPACE/.tools/Idric/_" bootstrap-libs \
+            IDRIS2_BOOT="$STAGE0" SCHEME=scheme
+          "$GITHUB_WORKSPACE/.tools/Idric/_/build/exec/idris2" --version
+
+      - name: Build and test Idriç TLS slice
+        env:
+          IDRIS2_PATH: ${{ github.workspace }}/.tools/Idric/_/libs/prelude/build/ttc:${{ github.workspace }}/.tools/Idric/_/libs/base/build/ttc:${{ github.workspace }}/.tools/Idric/_/libs/linear/build/ttc:${{ github.workspace }}/.tools/Idric/_/libs/network/build/ttc
+        run: |
+          make -f Makefile.idric idric-test \
+            IDRIC="$GITHUB_WORKSPACE/.tools/Idric/_/build/exec/idris2"

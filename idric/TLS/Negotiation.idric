@@ -237,6 +237,37 @@ parse_hello_retry_group extension =
       [high, low] => Right (named_group_from_code (wire_u16 high low))
       _ => Left "HelloRetryRequest key_share must contain one selected group"
 
+public export
+choice psk_key_exchange_mode one_of
+  psk_ke
+  psk_dhe_ke
+  unrecognized_psk_mode Bits8
+
+psk_mode_from_wire : Bits8 → psk_key_exchange_mode
+psk_mode_from_wire 0 = psk_ke
+psk_mode_from_wire 1 = psk_dhe_ke
+psk_mode_from_wire value = unrecognized_psk_mode value
+
+parse_psk_modes : List Bits8 → List psk_key_exchange_mode
+parse_psk_modes [] = []
+parse_psk_modes (mode :: rest) = psk_mode_from_wire mode :: parse_psk_modes rest
+
+public export
+parse_psk_key_exchange_modes :
+  tls_extension →
+  Either String (List psk_key_exchange_mode)
+parse_psk_key_exchange_modes extension =
+  if extension.extension_type_code /= psk_key_exchange_modes_code
+    then Left "expected psk_key_exchange_modes extension"
+    else case extension.extension_data of
+      [] => Left "psk_key_exchange_modes is missing its vector length"
+      declared_length :: mode_bytes =>
+        if declared_length == 0
+          then Left "psk_key_exchange_modes must contain at least one mode"
+          else if cast declared_length /= length mode_bytes
+            then Left "psk_key_exchange_modes length does not match its payload"
+            else Right (parse_psk_modes mode_bytes)
+
 extension_present : Bits16 → List tls_extension → Bool
 extension_present wanted [] = False
 extension_present wanted (extension :: rest) =
@@ -246,6 +277,58 @@ last_extension_is : Bits16 → List tls_extension → Bool
 last_extension_is wanted [] = False
 last_extension_is wanted [extension] = extension.extension_type_code == wanted
 last_extension_is wanted (_ :: rest) = last_extension_is wanted rest
+
+validate_optional_signature : List tls_extension → Either String ()
+validate_optional_signature extensions =
+  case find_single_extension signature_algorithms_code extensions of
+    Left problem => Left problem
+    Right Nothing => Right ()
+    Right (Just extension) =>
+      case parse_signature_algorithms extension of
+        Left problem => Left problem
+        Right _ => Right ()
+
+validate_optional_groups : List tls_extension → Either String ()
+validate_optional_groups extensions =
+  case find_single_extension supported_groups_code extensions of
+    Left problem => Left problem
+    Right Nothing => Right ()
+    Right (Just extension) =>
+      case parse_supported_groups extension of
+        Left problem => Left problem
+        Right _ => Right ()
+
+validate_optional_key_share : List tls_extension → Either String ()
+validate_optional_key_share extensions =
+  case find_single_extension key_share_code extensions of
+    Left problem => Left problem
+    Right Nothing => Right ()
+    Right (Just extension) =>
+      case parse_client_key_share extension of
+        Left problem => Left problem
+        Right _ => Right ()
+
+validate_optional_psk_modes : List tls_extension → Either String ()
+validate_optional_psk_modes extensions =
+  case find_single_extension psk_key_exchange_modes_code extensions of
+    Left problem => Left problem
+    Right Nothing => Right ()
+    Right (Just extension) =>
+      case parse_psk_key_exchange_modes extension of
+        Left problem => Left problem
+        Right _ => Right ()
+
+validate_negotiation_payloads : List tls_extension → Either String ()
+validate_negotiation_payloads extensions =
+  case validate_optional_signature extensions of
+    Left problem => Left problem
+    Right () =>
+      case validate_optional_groups extensions of
+        Left problem => Left problem
+        Right () =>
+          case validate_optional_key_share extensions of
+            Left problem => Left problem
+            Right () => validate_optional_psk_modes extensions
 
 public export
 validate_tls13_client_negotiation_extensions :
@@ -267,4 +350,4 @@ validate_tls13_client_negotiation_extensions extensions =
             then Left "non-PSK TLS 1.3 ClientHello requires signature_algorithms"
             else if not has_psk && not has_groups
               then Left "non-PSK TLS 1.3 ClientHello requires supported_groups and key_share"
-              else Right ()
+              else validate_negotiation_payloads extensions

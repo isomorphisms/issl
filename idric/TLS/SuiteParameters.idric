@@ -1,0 +1,53 @@
+module TLS.SuiteParameters
+
+import TLS.Hello
+
+%default total
+
+public export
+choice tls13_hash_algorithm one_of
+  sha256
+  sha384
+
+public export
+hash_output_length : tls13_hash_algorithm → ℕ
+hash_output_length sha256 = 32
+hash_output_length sha384 = 48
+
+public export
+choice tls13_aead_algorithm one_of
+  aes_128_gcm
+  aes_256_gcm
+  chacha20_poly1305
+  aes_128_ccm
+  aes_128_ccm_8
+
+public export
+record suite_parameters where
+  constructor MkSuiteParameters
+  suite_aead : tls13_aead_algorithm
+  suite_hash : tls13_hash_algorithm
+  suite_key_length : ℕ
+  suite_iv_length : ℕ
+  suite_tag_length : ℕ
+
+public export
+parameters_for_suite : tls13_cipher_suite → suite_parameters
+parameters_for_suite tls_aes_128_gcm_sha256 =
+  MkSuiteParameters aes_128_gcm sha256 16 12 16
+parameters_for_suite tls_aes_256_gcm_sha384 =
+  MkSuiteParameters aes_256_gcm sha384 32 12 16
+parameters_for_suite tls_chacha20_poly1305_sha256 =
+  MkSuiteParameters chacha20_poly1305 sha256 32 12 16
+parameters_for_suite tls_aes_128_ccm_sha256 =
+  MkSuiteParameters aes_128_ccm sha256 16 12 16
+parameters_for_suite tls_aes_128_ccm_8_sha256 =
+  MkSuiteParameters aes_128_ccm_8 sha256 16 12 8
+
+public export
+suite_hash_algorithm : tls13_cipher_suite → tls13_hash_algorithm
+suite_hash_algorithm suite = (parameters_for_suite suite).suite_hash
+
+public export
+suite_hash_length : tls13_cipher_suite → ℕ
+suite_hash_length suite = hash_output_length (suite_hash_algorithm suite)

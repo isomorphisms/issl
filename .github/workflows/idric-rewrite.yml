@@ -1,0 +1,39 @@
+name: Idriç TLS rewrite
+
+on:
+  push:
+    branches:
+      - idric-rewrite
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  idric-tls:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout issl
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Checkout Idriç compiler
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: isomorphisms/Idric
+          ref: d2463ec8a3a0dd4ac167029927452f3e83805dc3
+          path: .tools/Idric
+
+      - name: Install compiler bootstrap dependency
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends chezscheme
+
+      - name: Build Idriç compiler
+        run: |
+          make -C "$GITHUB_WORKSPACE/.tools/Idric" bootstrap SCHEME=scheme
+          "$GITHUB_WORKSPACE/.tools/Idric/build/exec/idris2" --version
+
+      - name: Build and test Idriç TLS slice
+        env:
+          IDRIS2_PREFIX: ${{ github.workspace }}/.tools/Idric/bootstrap-build
+        run: |
+          make -f Makefile.idric idric-test \
+            IDRIC="$GITHUB_WORKSPACE/.tools/Idric/build/exec/idris2"

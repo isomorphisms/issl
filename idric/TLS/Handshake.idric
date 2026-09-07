@@ -49,6 +49,14 @@ wire_u24 : Bits8 → Bits8 → Bits8 → ℕ
 wire_u24 high middle low =
   cast high * 65536 + cast middle * 256 + cast low
 
+take_bytes_exact : ℕ → List Bits8 → Maybe (List Bits8, List Bits8)
+take_bytes_exact 0 bytes = Just ([], bytes)
+take_bytes_exact (S remaining) [] = Nothing
+take_bytes_exact (S remaining) (byte :: rest) =
+  case take_bytes_exact remaining rest of
+    Nothing => Nothing
+    Just (taken, trailing) => Just (byte :: taken, trailing)
+
 public export
 record handshake_header where
   constructor MkHandshakeHeader
@@ -74,3 +82,34 @@ parse_handshake_header (kind :: length_high :: length_middle :: length_low :: re
             (wire_u24 length_high length_middle length_low))
           rest)
 parse_handshake_header _ = Left "TLS handshake header requires four bytes"
+
+public export
+record handshake_message where
+  constructor MkHandshakeMessage
+  message_kind : tls13_handshake_type
+  message_body : List Bits8
+
+public export
+record parsed_handshake_message where
+  constructor MkParsedHandshakeMessage
+  parsed_message : handshake_message
+  transcript_message_bytes : List Bits8
+  bytes_after_handshake_message : List Bits8
+
+public export
+parse_handshake_message : List Bits8 → Either String parsed_handshake_message
+parse_handshake_message
+  (kind :: length_high :: length_middle :: length_low :: rest) =
+    case handshake_type_from_wire kind of
+      Left problem => Left problem
+      Right message_kind =>
+        let body_length = wire_u24 length_high length_middle length_low in
+          case take_bytes_exact body_length rest of
+            Nothing => Left "TLS handshake body is truncated"
+            Just (body, trailing) =>
+              Right
+                (MkParsedHandshakeMessage
+                  (MkHandshakeMessage message_kind body)
+                  (kind :: length_high :: length_middle :: length_low :: body)
+                  trailing)
+parse_handshake_message _ = Left "TLS handshake message requires a four-byte header"

@@ -1,0 +1,115 @@
+module Main
+
+import TLS.Record
+import TLS.Handshake
+
+%default total
+
+check : String → Bool → IO ()
+check name True = putStrLn ("ok   " ++ name)
+check name False = putStrLn ("FAIL " ++ name)
+
+content_type_semantics : Bool
+content_type_semantics =
+  case ( content_type_from_wire 20
+       , content_type_from_wire 21
+       , content_type_from_wire 22
+       , content_type_from_wire 23
+       , content_type_from_wire 19
+       ) of
+    ( Right change_cipher_spec
+      , Right alert
+      , Right handshake
+      , Right application_data
+      , Left _
+      ) =>
+        content_type_wire change_cipher_spec == 20 &&
+        content_type_wire alert == 21 &&
+        content_type_wire handshake == 22 &&
+        content_type_wire application_data == 23
+    _ => False
+
+record_header_semantics : Bool
+record_header_semantics =
+  case parse_record_header [23, 3, 3, 0, 42, 99] of
+    Right
+      (MkParsedRecordHeader
+        (MkRecordHeader application_data 3 3 42)
+        [99]) => True
+    _ => False
+
+tls13_outer_rules : Bool
+tls13_outer_rules =
+  let good = MkRecordHeader application_data 3 3 16640
+      too_large = MkRecordHeader application_data 3 3 16641
+      wrong_version = MkRecordHeader application_data 3 1 20
+      wrong_type = MkRecordHeader handshake 3 3 20 in
+    case ( validate_tls13_ciphertext_header good
+         , validate_tls13_ciphertext_header too_large
+         , validate_tls13_ciphertext_header wrong_version
+         , validate_tls13_ciphertext_header wrong_type
+         ) of
+      (Right (MkTls13CiphertextHeader 16640), Left _, Left _, Left _) => True
+      _ => False
+
+inner_plaintext_semantics : Bool
+inner_plaintext_semantics =
+  case parse_tls13_inner_plaintext [1, 2, 3, 22, 0, 0] of
+    Right (MkTls13InnerPlaintext inner_handshake [1, 2, 3] 2) => True
+    _ => False
+
+inner_plaintext_refusals : Bool
+inner_plaintext_refusals =
+  case ( parse_tls13_inner_plaintext []
+       , parse_tls13_inner_plaintext [0, 0, 0]
+       , parse_tls13_inner_plaintext [20]
+       , parse_tls13_inner_plaintext [99]
+       ) of
+    (Left _, Left _, Left _, Left _) => True
+    _ => False
+
+handshake_header_semantics : Bool
+handshake_header_semantics =
+  case parse_handshake_header [1, 0, 0, 4, 10, 20, 30, 40] of
+    Right
+      (MkParsedHandshakeHeader
+        (MkHandshakeHeader client_hello 4)
+        [10, 20, 30, 40]) => True
+    _ => False
+
+handshake_length_semantics : Bool
+handshake_length_semantics =
+  case parse_handshake_header [20, 255, 255, 255] of
+    Right (MkParsedHandshakeHeader (MkHandshakeHeader finished 16777215) []) => True
+    _ => False
+
+handshake_type_refusal : Bool
+handshake_type_refusal =
+  case parse_handshake_header [3, 0, 0, 0] of
+    Left _ => True
+    _ => False
+
+all_pass : Bool
+all_pass =
+  content_type_semantics &&
+  record_header_semantics &&
+  tls13_outer_rules &&
+  inner_plaintext_semantics &&
+  inner_plaintext_refusals &&
+  handshake_header_semantics &&
+  handshake_length_semantics &&
+  handshake_type_refusal
+
+main : IO ()
+main = do
+  check "TLS content-type domain" content_type_semantics
+  check "TLS record header parsing" record_header_semantics
+  check "TLS 1.3 outer record rules" tls13_outer_rules
+  check "TLS 1.3 inner plaintext extraction" inner_plaintext_semantics
+  check "TLS 1.3 inner plaintext refusals" inner_plaintext_refusals
+  check "TLS 1.3 handshake header parsing" handshake_header_semantics
+  check "TLS handshake 24-bit length" handshake_length_semantics
+  check "unsupported handshake type refusal" handshake_type_refusal
+  if all_pass
+    then pure ()
+    else putStrLn "TLS framing acceptance failed"

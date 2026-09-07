@@ -37,7 +37,12 @@ jobs:
       - name: Install host build tools
         run: |
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends build-essential chezscheme
+          sudo apt-get install --yes --no-install-recommends \
+            bash \
+            build-essential \
+            chezscheme \
+            coreutils \
+            libgmp-dev
 
       - name: Bootstrap upstream Idris2 stage zero
         run: |

@@ -1,39 +1,46 @@
 name: Idriç TLS rewrite
 
 on:
-  push:
-    branches:
-      - idric-rewrite
   pull_request:
   workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: idric-tls-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   idric-tls:
     runs-on: ubuntu-24.04
     steps:
-      - name: Checkout issl
+      - name: Checkout exact issl head
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
-      - name: Checkout Idriç compiler
+      - name: Checkout pinned Idriç compiler
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           repository: isomorphisms/Idric
           ref: d2463ec8a3a0dd4ac167029927452f3e83805dc3
           path: .tools/Idric
 
-      - name: Install compiler bootstrap dependency
+      - name: Install host build tools
         run: |
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends chezscheme
+          sudo apt-get install --yes --no-install-recommends build-essential curl
 
-      - name: Build Idriç compiler
+      - name: Bootstrap Idriç compiler
         run: |
-          make -C "$GITHUB_WORKSPACE/.tools/Idric" bootstrap SCHEME=scheme
-          "$GITHUB_WORKSPACE/.tools/Idric/build/exec/idris2" --version
+          "$GITHUB_WORKSPACE/.tools/Idric/_/edric" bootstrap
+          "$GITHUB_WORKSPACE/.tools/Idric/_/build/exec/idris2" --version
 
       - name: Build and test Idriç TLS slice
         env:
-          IDRIS2_PREFIX: ${{ github.workspace }}/.tools/Idric/bootstrap-build
+          IDRIS2_PREFIX: ${{ github.workspace }}/.tools/Idric/_/bootstrap-build
+          IDRIS2_PATH: ${{ github.workspace }}/.tools/Idric/_/libs/prelude/build/ttc:${{ github.workspace }}/.tools/Idric/_/libs/base/build/ttc:${{ github.workspace }}/.tools/Idric/_/libs/linear/build/ttc:${{ github.workspace }}/.tools/Idric/_/libs/network/build/ttc
         run: |
           make -f Makefile.idric idric-test \
-            IDRIC="$GITHUB_WORKSPACE/.tools/Idric/build/exec/idris2"
+            IDRIC="$GITHUB_WORKSPACE/.tools/Idric/_/build/exec/idris2"

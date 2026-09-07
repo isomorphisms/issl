@@ -5,9 +5,11 @@ IDRIC_SOURCES := $(wildcard idric/*.idric idric/TLS/*.idric)
 
 idric-build: idric-vocabulary
 	$(IDRIC) --build issl-idric.ipkg
+	$(IDRIC) --build issl-idric-auth.ipkg
 
 idric-test: idric-build
 	./build/exec/issl-idric-tests
+	./build/exec/issl-idric-auth-tests
 
 idric-vocabulary:
 	@if grep -nE '(^|[^[:alnum:]_])Nat([^[:alnum:]_]|$$)' $(IDRIC_SOURCES); then \

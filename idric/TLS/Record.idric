@@ -58,6 +58,30 @@ parse_record_header (kind :: major :: minor :: length_high :: length_low :: rest
 parse_record_header _ = Left "TLS record header requires five bytes"
 
 public export
+record tls_record where
+  constructor MkTlsRecord
+  tls_record_header : record_header
+  tls_record_payload : List Bits8
+
+public export
+record parsed_tls_record where
+  constructor MkParsedTlsRecord
+  parsed_record : tls_record
+  bytes_after_record : List Bits8
+
+public export
+parse_tls_record : List Bits8 → Either String parsed_tls_record
+parse_tls_record bytes =
+  case parse_record_header bytes of
+    Left problem => Left problem
+    Right (MkParsedRecordHeader header rest) =>
+      let payload = take header.record_length_number rest
+          remaining = drop header.record_length_number rest in
+        if length payload /= header.record_length_number
+          then Left "TLS record payload is shorter than its declared length"
+          else Right (MkParsedTlsRecord (MkTlsRecord header payload) remaining)
+
+public export
 tls13_plaintext_limit : ℕ
 tls13_plaintext_limit = 16384
 

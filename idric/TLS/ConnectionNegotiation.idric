@@ -102,10 +102,10 @@ response_extension_was_requested :
   List tls_extension →
   tls_extension →
   Bool
-response_extension_was_requested hello_retry_request _ extension =
+response_extension_was_requested hello_retry_request client_extensions extension =
   if extension.extension_type_code == 44
     then True
-    else False
+    else extension_present extension.extension_type_code client_extensions
 response_extension_was_requested _ client_extensions extension =
   extension_present extension.extension_type_code client_extensions
 

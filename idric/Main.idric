@@ -39,6 +39,23 @@ record_header_semantics =
         [99]) => True
     _ => False
 
+record_payload_semantics : Bool
+record_payload_semantics =
+  case parse_tls_record [23, 3, 3, 0, 3, 1, 2, 3, 99, 100] of
+    Right
+      (MkParsedTlsRecord
+        (MkTlsRecord
+          (MkRecordHeader application_data 3 3 3)
+          [1, 2, 3])
+        [99, 100]) => True
+    _ => False
+
+truncated_record_refusal : Bool
+truncated_record_refusal =
+  case parse_tls_record [23, 3, 3, 0, 3, 1, 2] of
+    Left _ => True
+    _ => False
+
 tls13_outer_rules : Bool
 tls13_outer_rules =
   let good = MkRecordHeader application_data 3 3 16640
@@ -94,6 +111,8 @@ all_pass : Bool
 all_pass =
   content_type_semantics &&
   record_header_semantics &&
+  record_payload_semantics &&
+  truncated_record_refusal &&
   tls13_outer_rules &&
   inner_plaintext_semantics &&
   inner_plaintext_refusals &&
@@ -105,6 +124,8 @@ main : IO ()
 main = do
   check "TLS content-type domain" content_type_semantics
   check "TLS record header parsing" record_header_semantics
+  check "TLS record payload boundary" record_payload_semantics
+  check "truncated TLS record refusal" truncated_record_refusal
   check "TLS 1.3 outer record rules" tls13_outer_rules
   check "TLS 1.3 inner plaintext extraction" inner_plaintext_semantics
   check "TLS 1.3 inner plaintext refusals" inner_plaintext_refusals

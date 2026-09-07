@@ -2,6 +2,8 @@ module Main
 
 import TLS.Record
 import TLS.Handshake
+import TLS.Extension
+import TLS.Hello
 import System
 
 %default total
@@ -107,6 +109,123 @@ handshake_type_refusal =
     Left _ => True
     _ => False
 
+extension_vector_semantics : Bool
+extension_vector_semantics =
+  case parse_extension_vector [0, 7, 0, 43, 0, 3, 2, 3, 4, 99] of
+    Right
+      (MkParsedExtensionVector
+        [MkTlsExtension 43 [2, 3, 4]]
+        [99]) => True
+    _ => False
+
+supported_versions_semantics : Bool
+supported_versions_semantics =
+  case parse_client_supported_versions (MkTlsExtension 43 [2, 3, 4]) of
+    Right [MkProtocolVersion 3 4] => True
+    _ => False
+
+zero_random : List Bits8
+zero_random =
+  [0, 0, 0, 0, 0, 0, 0, 0,
+   0, 0, 0, 0, 0, 0, 0, 0,
+   0, 0, 0, 0, 0, 0, 0, 0,
+   0, 0, 0, 0, 0, 0, 0, 0]
+
+minimal_client_hello : List Bits8
+minimal_client_hello =
+  [3, 3] ++ zero_random ++
+  [0,
+   0, 2, 19, 1,
+   1, 0,
+   0, 7, 0, 43, 0, 3, 2, 3, 4]
+
+client_hello_semantics : Bool
+client_hello_semantics =
+  case parse_tls13_client_hello minimal_client_hello of
+    Right
+      (MkTls13ClientHello
+        random
+        []
+        [MkCipherSuiteCode 4865]
+        [MkTlsExtension 43 [2, 3, 4]]) => length random == 32
+    _ => False
+
+client_hello_refusals : Bool
+client_hello_refusals =
+  let bad_compression =
+        [3, 3] ++ zero_random ++
+        [0, 0, 2, 19, 1, 1, 1, 0, 7, 0, 43, 0, 3, 2, 3, 4]
+      missing_versions =
+        [3, 3] ++ zero_random ++
+        [0, 0, 2, 19, 1, 1, 0, 0, 0]
+      duplicate_versions =
+        [3, 3] ++ zero_random ++
+        [0, 0, 2, 19, 1, 1, 0,
+         0, 14,
+         0, 43, 0, 3, 2, 3, 4,
+         0, 43, 0, 3, 2, 3, 4] in
+    case ( parse_tls13_client_hello bad_compression
+         , parse_tls13_client_hello missing_versions
+         , parse_tls13_client_hello duplicate_versions
+         ) of
+      (Left _, Left _, Left _) => True
+      _ => False
+
+minimal_server_hello : List Bits8
+minimal_server_hello =
+  [3, 3] ++ zero_random ++
+  [0,
+   19, 1,
+   0,
+   0, 6, 0, 43, 0, 2, 3, 4]
+
+hello_retry_random : List Bits8
+hello_retry_random =
+  [207, 33, 173, 116, 229, 154, 97, 17,
+   190, 29, 140, 2, 30, 101, 184, 145,
+   194, 162, 17, 22, 122, 187, 140, 94,
+   7, 158, 9, 226, 200, 168, 51, 156]
+
+server_hello_semantics : Bool
+server_hello_semantics =
+  case parse_tls13_server_hello minimal_server_hello of
+    Right
+      (MkTls13ServerHello
+        negotiated_server_hello
+        random
+        []
+        (MkCipherSuiteCode 4865)
+        tls_aes_128_gcm_sha256
+        [MkTlsExtension 43 [3, 4]]) => length random == 32
+    _ => False
+
+hello_retry_semantics : Bool
+hello_retry_semantics =
+  let retry =
+        [3, 3] ++ hello_retry_random ++
+        [0, 19, 1, 0, 0, 6, 0, 43, 0, 2, 3, 4] in
+    case parse_tls13_server_hello retry of
+      Right (MkTls13ServerHello hello_retry_request _ _ _ _ _) => True
+      _ => False
+
+server_hello_refusals : Bool
+server_hello_refusals =
+  let bad_compression =
+        [3, 3] ++ zero_random ++
+        [0, 19, 1, 1, 0, 6, 0, 43, 0, 2, 3, 4]
+      unknown_suite =
+        [3, 3] ++ zero_random ++
+        [0, 19, 6, 0, 0, 6, 0, 43, 0, 2, 3, 4]
+      missing_versions =
+        [3, 3] ++ zero_random ++
+        [0, 19, 1, 0, 0, 0] in
+    case ( parse_tls13_server_hello bad_compression
+         , parse_tls13_server_hello unknown_suite
+         , parse_tls13_server_hello missing_versions
+         ) of
+      (Left _, Left _, Left _) => True
+      _ => False
+
 all_pass : Bool
 all_pass =
   content_type_semantics &&
@@ -118,7 +237,14 @@ all_pass =
   inner_plaintext_refusals &&
   handshake_header_semantics &&
   handshake_length_semantics &&
-  handshake_type_refusal
+  handshake_type_refusal &&
+  extension_vector_semantics &&
+  supported_versions_semantics &&
+  client_hello_semantics &&
+  client_hello_refusals &&
+  server_hello_semantics &&
+  hello_retry_semantics &&
+  server_hello_refusals
 
 main : IO ()
 main = do
@@ -132,4 +258,11 @@ main = do
   check "TLS 1.3 handshake header parsing" handshake_header_semantics
   check "TLS handshake 24-bit length" handshake_length_semantics
   check "unsupported handshake type refusal" handshake_type_refusal
+  check "TLS extension vector framing" extension_vector_semantics
+  check "client supported_versions parsing" supported_versions_semantics
+  check "TLS 1.3 ClientHello parsing" client_hello_semantics
+  check "TLS 1.3 ClientHello refusals" client_hello_refusals
+  check "TLS 1.3 ServerHello parsing" server_hello_semantics
+  check "HelloRetryRequest recognition" hello_retry_semantics
+  check "TLS 1.3 ServerHello refusals" server_hello_refusals
   if all_pass then pure () else exitFailure

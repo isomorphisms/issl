@@ -53,22 +53,33 @@ take_bytes_exact (S remaining) (byte :: rest) =
     Nothing => Nothing
     Just (taken, trailing) => Just (byte :: taken, trailing)
 
-parse_extension_entries : List Bits8 → Either String (List tls_extension)
-parse_extension_entries [] = Right []
-parse_extension_entries
+parse_extension_entries_with_fuel :
+  ℕ →
+  List Bits8 →
+  Either String (List tls_extension)
+parse_extension_entries_with_fuel _ [] = Right []
+parse_extension_entries_with_fuel 0 _ =
+  Left "TLS extension parser exhausted its input bound"
+parse_extension_entries_with_fuel
+  (S fuel)
   (type_high :: type_low :: length_high :: length_low :: rest) =
     let data_length : ℕ = cast (wire_u16 length_high length_low) in
       case take_bytes_exact data_length rest of
         Nothing => Left "TLS extension data is truncated"
         Just (data_bytes, trailing) =>
-          case parse_extension_entries trailing of
+          case parse_extension_entries_with_fuel fuel trailing of
             Left problem => Left problem
             Right extensions =>
               Right
                 (MkTlsExtension
                   (wire_u16 type_high type_low)
                   data_bytes :: extensions)
-parse_extension_entries _ = Left "TLS extension header is truncated"
+parse_extension_entries_with_fuel (S _) _ =
+  Left "TLS extension header is truncated"
+
+parse_extension_entries : List Bits8 → Either String (List tls_extension)
+parse_extension_entries bytes =
+  parse_extension_entries_with_fuel (length bytes) bytes
 
 public export
 record parsed_extension_vector where

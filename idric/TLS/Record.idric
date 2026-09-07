@@ -1,0 +1,119 @@
+module TLS.Record
+
+%default total
+
+public export
+choice tls_content_type one_of
+  change_cipher_spec
+  alert
+  handshake
+  application_data
+
+public export
+content_type_from_wire : Bits8 → Either String tls_content_type
+content_type_from_wire 20 = Right change_cipher_spec
+content_type_from_wire 21 = Right alert
+content_type_from_wire 22 = Right handshake
+content_type_from_wire 23 = Right application_data
+content_type_from_wire value = Left ("unknown TLS content type " ++ show value)
+
+public export
+content_type_wire : tls_content_type → Bits8
+content_type_wire change_cipher_spec = 20
+content_type_wire alert = 21
+content_type_wire handshake = 22
+content_type_wire application_data = 23
+
+public export
+record record_header where
+  constructor MkRecordHeader
+  record_content_type : tls_content_type
+  record_version_major : Bits8
+  record_version_minor : Bits8
+  record_length_number : ℕ
+
+public export
+record parsed_record_header where
+  constructor MkParsedRecordHeader
+  parsed_header : record_header
+  remaining_record_bytes : List Bits8
+
+wire_u16 : Bits8 → Bits8 → ℕ
+wire_u16 high low = cast high * 256 + cast low
+
+public export
+parse_record_header : List Bits8 → Either String parsed_record_header
+parse_record_header (kind :: major :: minor :: length_high :: length_low :: rest) =
+  case content_type_from_wire kind of
+    Left problem => Left problem
+    Right content =>
+      Right
+        (MkParsedRecordHeader
+          (MkRecordHeader
+            content
+            major
+            minor
+            (wire_u16 length_high length_low))
+          rest)
+parse_record_header _ = Left "TLS record header requires five bytes"
+
+public export
+tls13_plaintext_limit : ℕ
+tls13_plaintext_limit = 16384
+
+public export
+tls13_ciphertext_limit : ℕ
+tls13_ciphertext_limit = 16640
+
+public export
+record tls13_ciphertext_header where
+  constructor MkTls13CiphertextHeader
+  tls13_ciphertext_length : ℕ
+
+public export
+validate_tls13_ciphertext_header : record_header → Either String tls13_ciphertext_header
+validate_tls13_ciphertext_header header =
+  case header.record_content_type of
+    application_data =>
+      if header.record_version_major /= 3 || header.record_version_minor /= 3
+        then Left "TLS 1.3 ciphertext must use legacy record version 0x0303"
+        else if header.record_length_number > tls13_ciphertext_limit
+          then Left "TLS 1.3 ciphertext exceeds 2^14 + 256 bytes"
+          else Right (MkTls13CiphertextHeader header.record_length_number)
+    _ => Left "TLS 1.3 ciphertext outer content type must be application_data"
+
+public export
+choice tls13_inner_content_type one_of
+  inner_alert
+  inner_handshake
+  inner_application_data
+
+inner_content_type_from_wire : Bits8 → Either String tls13_inner_content_type
+inner_content_type_from_wire 21 = Right inner_alert
+inner_content_type_from_wire 22 = Right inner_handshake
+inner_content_type_from_wire 23 = Right inner_application_data
+inner_content_type_from_wire 20 = Left "change_cipher_spec is not a TLS 1.3 inner content type"
+inner_content_type_from_wire value = Left ("unknown TLS 1.3 inner content type " ++ show value)
+
+public export
+record tls13_inner_plaintext where
+  constructor MkTls13InnerPlaintext
+  inner_content_type : tls13_inner_content_type
+  inner_content_bytes : List Bits8
+  inner_padding_length : ℕ
+
+parse_reversed_inner : List Bits8 → ℕ → Either String tls13_inner_plaintext
+parse_reversed_inner [] _ = Left "TLS 1.3 inner plaintext contains only zero padding"
+parse_reversed_inner (0 :: rest) padding = parse_reversed_inner rest (padding + 1)
+parse_reversed_inner (kind :: reversed_content) padding =
+  case inner_content_type_from_wire kind of
+    Left problem => Left problem
+    Right content_type =>
+      let content = reverse reversed_content in
+        if length content > tls13_plaintext_limit
+          then Left "TLS 1.3 plaintext content exceeds 2^14 bytes"
+          else Right (MkTls13InnerPlaintext content_type content padding)
+
+public export
+parse_tls13_inner_plaintext : List Bits8 → Either String tls13_inner_plaintext
+parse_tls13_inner_plaintext bytes = parse_reversed_inner (reverse bytes) 0

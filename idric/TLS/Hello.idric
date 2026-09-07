@@ -2,6 +2,7 @@ module TLS.Hello
 
 import TLS.Extension
 import TLS.Negotiation
+import TLS.ServerNegotiation
 
 %default total
 
@@ -167,6 +168,15 @@ server_supported_version extensions =
     Right Nothing => Left "TLS 1.3 ServerHello is missing supported_versions"
     Right (Just extension) => parse_server_supported_version extension
 
+validate_server_negotiation :
+  tls13_server_hello_kind →
+  List tls_extension →
+  Either String ()
+validate_server_negotiation negotiated_server_hello extensions =
+  validate_negotiated_server_hello_extensions extensions
+validate_server_negotiation hello_retry_request extensions =
+  validate_hello_retry_extensions extensions
+
 public export
 record tls13_server_hello where
   constructor MkTls13ServerHello
@@ -192,14 +202,17 @@ parse_server_extensions random session_id suite_code suite bytes =
         Left problem => Left problem
         Right version =>
           if version_is_tls13 version
-            then Right
-              (MkTls13ServerHello
-                (server_hello_kind random)
-                random
-                session_id
-                suite_code
-                suite
-                extensions)
+            then let kind = server_hello_kind random in
+              case validate_server_negotiation kind extensions of
+                Left problem => Left problem
+                Right () => Right
+                  (MkTls13ServerHello
+                    kind
+                    random
+                    session_id
+                    suite_code
+                    suite
+                    extensions)
             else Left "ServerHello selected a protocol version other than TLS 1.3"
     Right (MkParsedExtensionVector _ _) => Left "bytes remain after ServerHello extensions"
 

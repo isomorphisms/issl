@@ -11,6 +11,8 @@ The inherited C source is useful as a behavior inventory and compatibility refer
 
 - the four TLS record content types used by TLS 1.3;
 - parsing the five-byte TLS record header;
+- consuming exactly the payload length declared by that header while returning bytes belonging to the next record;
+- refusal of a truncated record payload;
 - the TLS 1.3 ciphertext legacy-version rule (`0x0303`);
 - the TLS 1.3 ciphertext size limit (`2^14 + 256` bytes);
 - a distinct type for valid TLS 1.3 inner content;

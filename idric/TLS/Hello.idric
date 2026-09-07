@@ -1,6 +1,7 @@
 module TLS.Hello
 
 import TLS.Extension
+import TLS.Negotiation
 
 %default total
 
@@ -80,7 +81,10 @@ parse_client_extensions random session_id suites bytes =
     Right (MkParsedExtensionVector extensions []) =>
       case validate_client_tls13_version extensions of
         Left problem => Left problem
-        Right () => Right (MkTls13ClientHello random session_id suites extensions)
+        Right () =>
+          case validate_tls13_client_negotiation_extensions extensions of
+            Left problem => Left problem
+            Right () => Right (MkTls13ClientHello random session_id suites extensions)
     Right (MkParsedExtensionVector _ _) => Left "bytes remain after ClientHello extensions"
 
 parse_client_compression :

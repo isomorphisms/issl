@@ -5,6 +5,12 @@ It is not an Idriç binding to OpenSSL.
 
 The inherited C source is useful as a behavior inventory and compatibility reference, but new Idriç modules should express protocol concepts directly and should not reproduce OpenSSL's BIO, provider, allocator, error-stack, or object-model machinery unless a protocol requirement actually needs an equivalent concept.
 
+## Normative TLS reference
+
+Use RFC 9846 as the TLS 1.3 specification. RFC 9846 obsoleted RFC 8446 in July 2026 while retaining TLS version 1.3 and wire compatibility. The first framing slice below uses wire values and record limits that are unchanged by that update.
+
+Future handshake work must incorporate RFC 9846's tightened requirements rather than copying an RFC 8446-era implementation mechanically. In particular: KeyShare values must not be reused between connections, TLS 1.0/1.1 negotiation is forbidden, KeyUpdate requirements are stricter, and alert `general_error` is now defined.
+
 ## Implemented first slice
 
 `idric/TLS/Record.idric` implements pure TLS 1.3 record semantics:
@@ -25,7 +31,7 @@ The inherited C source is useful as a behavior inventory and compatibility refer
 - parsing the one-byte kind plus three-byte length header;
 - refusal of unsupported handshake kinds.
 
-The numerical wire values and limits follow RFC 8446. OpenSSL's inherited `ssl/record` code remains present for comparison, but the Idriç implementation does not call it.
+OpenSSL's inherited `ssl/record` code remains present for comparison, but the Idriç implementation does not call it.
 
 ## Deliberately not claimed
 

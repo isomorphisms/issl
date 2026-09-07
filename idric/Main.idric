@@ -3,10 +3,13 @@ module Main
 import TLS.Record
 import TLS.Handshake
 import TLS.Extension
+import TLS.Negotiation
 import TLS.Hello
 import TLS.Alert
 import TLS.KeyUpdate
 import TLS.ClientState
+import TLS.KdfLabel
+import TLS.Transcript
 import System
 
 %default total
@@ -100,6 +103,16 @@ handshake_header_semantics =
         [10, 20, 30, 40]) => True
     _ => False
 
+handshake_message_semantics : Bool
+handshake_message_semantics =
+  case parse_handshake_message [20, 0, 0, 2, 9, 8, 99] of
+    Right
+      (MkParsedHandshakeMessage
+        (MkHandshakeMessage finished [9, 8])
+        [20, 0, 0, 2, 9, 8]
+        [99]) => True
+    _ => False
+
 handshake_length_semantics : Bool
 handshake_length_semantics =
   case parse_handshake_header [20, 255, 255, 255] of
@@ -108,8 +121,10 @@ handshake_length_semantics =
 
 handshake_type_refusal : Bool
 handshake_type_refusal =
-  case parse_handshake_header [3, 0, 0, 0] of
-    Left _ => True
+  case ( parse_handshake_header [3, 0, 0, 0]
+       , parse_handshake_message [20, 0, 0, 2, 9]
+       ) of
+    (Left _, Left _) => True
     _ => False
 
 extension_vector_semantics : Bool
@@ -121,11 +136,52 @@ extension_vector_semantics =
         [99]) => True
     _ => False
 
+extension_duplicate_refusal : Bool
+extension_duplicate_refusal =
+  case parse_extension_vector
+    [0, 14,
+     0, 43, 0, 3, 2, 3, 4,
+     0, 43, 0, 3, 2, 3, 4] of
+      Left _ => True
+      _ => False
+
 supported_versions_semantics : Bool
 supported_versions_semantics =
   case parse_client_supported_versions (MkTlsExtension 43 [2, 3, 4]) of
     Right [MkProtocolVersion 3 4] => True
     _ => False
+
+negotiation_extension_semantics : Bool
+negotiation_extension_semantics =
+  case ( parse_supported_groups (MkTlsExtension 10 [0, 2, 0, 23])
+       , parse_signature_algorithms (MkTlsExtension 13 [0, 2, 8, 4])
+       , parse_client_key_share (MkTlsExtension 51 [0, 0])
+       ) of
+    ( Right [secp256r1]
+      , Right [rsa_pss_rsae_sha256]
+      , Right []
+      ) => True
+    _ => False
+
+negotiation_extension_refusals : Bool
+negotiation_extension_refusals =
+  case ( parse_supported_groups (MkTlsExtension 10 [0, 4, 0, 23, 0, 23])
+       , parse_client_key_share
+           (MkTlsExtension 51
+             [0, 10,
+              0, 29, 0, 1, 1,
+              0, 29, 0, 1, 2])
+       ) of
+    (Left _, Left _) => True
+    _ => False
+
+kdf_label_semantics : Bool
+kdf_label_semantics =
+  case make_hkdf_label 16 traffic_key [] of
+    Left _ => False
+    Right label =>
+      encode_hkdf_label label ==
+        [0, 16, 9, 116, 108, 115, 49, 51, 32, 107, 101, 121, 0]
 
 zero_random : List Bits8
 zero_random =
@@ -134,13 +190,19 @@ zero_random =
    0, 0, 0, 0, 0, 0, 0, 0,
    0, 0, 0, 0, 0, 0, 0, 0]
 
+minimal_client_extensions : List Bits8
+minimal_client_extensions =
+  [0, 29,
+   0, 43, 0, 3, 2, 3, 4,
+   0, 13, 0, 4, 0, 2, 8, 4,
+   0, 10, 0, 4, 0, 2, 0, 23,
+   0, 51, 0, 2, 0, 0]
+
 minimal_client_hello : List Bits8
 minimal_client_hello =
   [3, 3] ++ zero_random ++
-  [0,
-   0, 2, 19, 1,
-   1, 0,
-   0, 7, 0, 43, 0, 3, 2, 3, 4]
+  [0, 0, 2, 19, 1, 1, 0] ++
+  minimal_client_extensions
 
 client_hello_semantics : Bool
 client_hello_semantics =
@@ -150,17 +212,27 @@ client_hello_semantics =
         random
         []
         [MkCipherSuiteCode 4865]
-        [MkTlsExtension 43 [2, 3, 4]]) => length random == 32
+        extensions) =>
+          length random == 32 && length extensions == 4
     _ => False
 
 client_hello_refusals : Bool
 client_hello_refusals =
   let bad_compression =
         [3, 3] ++ zero_random ++
-        [0, 0, 2, 19, 1, 1, 1, 0, 7, 0, 43, 0, 3, 2, 3, 4]
+        [0, 0, 2, 19, 1, 1, 1] ++
+        minimal_client_extensions
       missing_versions =
         [3, 3] ++ zero_random ++
-        [0, 0, 2, 19, 1, 1, 0, 0, 0]
+        [0, 0, 2, 19, 1, 1, 0,
+         0, 22,
+         0, 13, 0, 4, 0, 2, 8, 4,
+         0, 10, 0, 4, 0, 2, 0, 23,
+         0, 51, 0, 2, 0, 0]
+      missing_negotiation =
+        [3, 3] ++ zero_random ++
+        [0, 0, 2, 19, 1, 1, 0,
+         0, 7, 0, 43, 0, 3, 2, 3, 4]
       duplicate_versions =
         [3, 3] ++ zero_random ++
         [0, 0, 2, 19, 1, 1, 0,
@@ -169,9 +241,10 @@ client_hello_refusals =
          0, 43, 0, 3, 2, 3, 4] in
     case ( parse_tls13_client_hello bad_compression
          , parse_tls13_client_hello missing_versions
+         , parse_tls13_client_hello missing_negotiation
          , parse_tls13_client_hello duplicate_versions
          ) of
-      (Left _, Left _, Left _) => True
+      (Left _, Left _, Left _, Left _) => True
       _ => False
 
 minimal_server_hello : List Bits8
@@ -356,10 +429,15 @@ all_pass =
   inner_plaintext_semantics &&
   inner_plaintext_refusals &&
   handshake_header_semantics &&
+  handshake_message_semantics &&
   handshake_length_semantics &&
   handshake_type_refusal &&
   extension_vector_semantics &&
+  extension_duplicate_refusal &&
   supported_versions_semantics &&
+  negotiation_extension_semantics &&
+  negotiation_extension_refusals &&
+  kdf_label_semantics &&
   client_hello_semantics &&
   client_hello_refusals &&
   server_hello_semantics &&
@@ -384,10 +462,15 @@ main = do
   check "TLS 1.3 inner plaintext extraction" inner_plaintext_semantics
   check "TLS 1.3 inner plaintext refusals" inner_plaintext_refusals
   check "TLS 1.3 handshake header parsing" handshake_header_semantics
+  check "TLS complete handshake message framing" handshake_message_semantics
   check "TLS handshake 24-bit length" handshake_length_semantics
-  check "unsupported handshake type refusal" handshake_type_refusal
+  check "TLS handshake framing refusals" handshake_type_refusal
   check "TLS extension vector framing" extension_vector_semantics
+  check "duplicate TLS extension refusal" extension_duplicate_refusal
   check "client supported_versions parsing" supported_versions_semantics
+  check "TLS negotiation extension parsing" negotiation_extension_semantics
+  check "TLS negotiation extension refusals" negotiation_extension_refusals
+  check "TLS HKDF label framing" kdf_label_semantics
   check "TLS 1.3 ClientHello parsing" client_hello_semantics
   check "TLS 1.3 ClientHello refusals" client_hello_refusals
   check "TLS 1.3 ServerHello parsing" server_hello_semantics

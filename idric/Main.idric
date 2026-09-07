@@ -4,6 +4,9 @@ import TLS.Record
 import TLS.Handshake
 import TLS.Extension
 import TLS.Hello
+import TLS.Alert
+import TLS.KeyUpdate
+import TLS.ClientState
 import System
 
 %default total
@@ -226,6 +229,123 @@ server_hello_refusals =
       (Left _, Left _, Left _) => True
       _ => False
 
+alert_semantics : Bool
+alert_semantics =
+  case ( parse_tls_alert [1, 0]
+       , parse_tls_alert [2, 117]
+       , parse_tls_alert [1, 250]
+       ) of
+    ( Right close
+      , Right general
+      , Right unknown
+      ) =>
+        case (alert_effect close, alert_effect general, alert_effect unknown) of
+          ( Right peer_closed_write
+            , Right fatal_connection_error
+            , Right fatal_connection_error
+            ) => True
+          _ => False
+    _ => False
+
+alert_refusals : Bool
+alert_refusals =
+  case (parse_tls_alert [1], parse_tls_alert [2, 0]) of
+    (Left _, Right close) =>
+      case alert_effect close of
+        Left _ => True
+        _ => False
+    _ => False
+
+key_update_semantics : Bool
+key_update_semantics =
+  case sent_key_update initial_key_update_state update_requested of
+    Left _ => False
+    Right waiting =>
+      case sent_key_update waiting update_requested of
+        Right _ => False
+        Left _ =>
+          let received = received_key_update waiting update_requested in
+            if application_data_may_be_sent received
+              then False
+              else case send_required_key_update_response received of
+                Left _ => False
+                Right cleared => application_data_may_be_sent cleared
+
+key_update_refusals : Bool
+key_update_refusals =
+  case ( parse_key_update_request [0]
+       , parse_key_update_request [1]
+       , parse_key_update_request [2]
+       , parse_key_update_request []
+       ) of
+    (Right update_not_requested, Right update_requested, Left _, Left _) => True
+    _ => False
+
+run_client_events :
+  client_handshake_state →
+  List client_handshake_event →
+  Either String client_handshake_state
+run_client_events state [] = Right state
+run_client_events state (event :: rest) =
+  case advance_client_handshake state event of
+    Left problem => Left problem
+    Right next => run_client_events next rest
+
+client_certificate_path : Bool
+client_certificate_path =
+  case run_client_events
+    initial_client_handshake_state
+    [ received_server_hello
+    , received_encrypted_extensions
+    , received_server_certificate
+    , received_server_certificate_verify
+    , received_server_finished
+    , sent_client_finished
+    ] of
+      Right handshake_established => True
+      _ => False
+
+client_authentication_path : Bool
+client_authentication_path =
+  case run_client_events
+    initial_client_handshake_state
+    [ received_server_hello
+    , received_encrypted_extensions
+    , received_certificate_request
+    , received_server_certificate
+    , received_server_certificate_verify
+    , received_server_finished
+    , sent_client_certificate
+    , sent_client_certificate_verify
+    , sent_client_finished
+    ] of
+      Right handshake_established => True
+      _ => False
+
+client_psk_path : Bool
+client_psk_path =
+  case run_client_events
+    initial_client_handshake_state
+    [ received_server_hello
+    , received_encrypted_extensions
+    , received_server_finished
+    , sent_client_finished
+    ] of
+      Right handshake_established => True
+      _ => False
+
+client_state_refusals : Bool
+client_state_refusals =
+  case ( run_client_events
+           initial_client_handshake_state
+           [received_hello_retry_request, received_hello_retry_request]
+       , run_client_events
+           initial_client_handshake_state
+           [received_server_finished]
+       ) of
+    (Left _, Left _) => True
+    _ => False
+
 all_pass : Bool
 all_pass =
   content_type_semantics &&
@@ -244,7 +364,15 @@ all_pass =
   client_hello_refusals &&
   server_hello_semantics &&
   hello_retry_semantics &&
-  server_hello_refusals
+  server_hello_refusals &&
+  alert_semantics &&
+  alert_refusals &&
+  key_update_semantics &&
+  key_update_refusals &&
+  client_certificate_path &&
+  client_authentication_path &&
+  client_psk_path &&
+  client_state_refusals
 
 main : IO ()
 main = do
@@ -265,4 +393,12 @@ main = do
   check "TLS 1.3 ServerHello parsing" server_hello_semantics
   check "HelloRetryRequest recognition" hello_retry_semantics
   check "TLS 1.3 ServerHello refusals" server_hello_refusals
+  check "TLS 1.3 alert semantics" alert_semantics
+  check "TLS 1.3 alert refusals" alert_refusals
+  check "TLS 1.3 KeyUpdate obligations" key_update_semantics
+  check "TLS 1.3 KeyUpdate refusals" key_update_refusals
+  check "TLS client certificate handshake path" client_certificate_path
+  check "TLS client authentication handshake path" client_authentication_path
+  check "TLS client PSK handshake path" client_psk_path
+  check "TLS client handshake ordering refusals" client_state_refusals
   if all_pass then pure () else exitFailure

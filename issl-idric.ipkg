@@ -1,0 +1,8 @@
+package issl_idric
+
+version = 0.1.0
+sourcedir = "idric"
+
+modules = TLS.Record, TLS.Handshake, Main
+main = Main
+executable = issl-idric-tests

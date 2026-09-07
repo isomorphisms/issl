@@ -1,24 +1,26 @@
 name: Idriç TLS rewrite
 
 on:
-  pull_request:
+  push:
+    branches:
+      - idric-acceptance
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: idric-tls-${{ github.event.pull_request.number || github.ref }}
+  group: idric-tls-acceptance-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   idric-tls:
     runs-on: ubuntu-24.04
     steps:
-      - name: Checkout exact issl head
+      - name: Checkout exact acceptance head
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          ref: ${{ github.sha }}
 
       - name: Checkout pinned Idriç compiler
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683

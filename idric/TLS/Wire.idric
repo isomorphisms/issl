@@ -26,6 +26,11 @@ u16_code : Byte → Byte → WireCode
 u16_code high low = cast high * 256 + cast low
 
 public export
+u24_number : Byte → Byte → Byte → ℕ
+u24_number high middle low =
+  cast high * 65536 + cast middle * 256 + cast low
+
+public export
 take_exact : ℕ → bytes → Maybe (bytes, bytes)
 take_exact 0 input = Just ([], input)
 take_exact (S remaining) [] = Nothing

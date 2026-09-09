@@ -1,0 +1,35 @@
+module TLS.Wire
+
+%default total
+
+-- Raw wire representation belongs here. Protocol modules should name TLS
+-- concepts rather than repeat bit widths and byte-slicing machinery.
+
+public export
+Byte : Type
+Byte = Bits8
+
+public export
+bytes : Type
+bytes = List Byte
+
+public export
+WireCode : Type
+WireCode = Bits16
+
+public export
+u16_number : Byte → Byte → ℕ
+u16_number high low = cast high * 256 + cast low
+
+public export
+u16_code : Byte → Byte → WireCode
+u16_code high low = cast high * 256 + cast low
+
+public export
+take_exact : ℕ → bytes → Maybe (bytes, bytes)
+take_exact 0 input = Just ([], input)
+take_exact (S remaining) [] = Nothing
+take_exact (S remaining) (byte :: rest) =
+  case take_exact remaining rest of
+    Nothing => Nothing
+    Just (taken, trailing) => Just (byte :: taken, trailing)

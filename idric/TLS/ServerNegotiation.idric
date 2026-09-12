@@ -1,0 +1,71 @@
+module TLS.ServerNegotiation
+
+import TLS.Extension
+import TLS.Negotiation
+
+%default total
+
+wire_u16 : Bits8 → Bits8 → Bits16
+wire_u16 high low = cast high * 256 + cast low
+
+extension_present : Bits16 → List tls_extension → Bool
+extension_present wanted [] = False
+extension_present wanted (extension :: rest) =
+  extension.extension_type_code == wanted || extension_present wanted rest
+
+public export
+parse_server_selected_psk : tls_extension → Either String Bits16
+parse_server_selected_psk extension =
+  if extension.extension_type_code /= pre_shared_key_code
+    then Left "expected pre_shared_key extension"
+    else case extension.extension_data of
+      [high, low] => Right (wire_u16 high low)
+      _ => Left "ServerHello pre_shared_key must contain one selected identity"
+
+validate_optional_server_key_share : List tls_extension → Either String ()
+validate_optional_server_key_share extensions =
+  case find_single_extension key_share_code extensions of
+    Left problem => Left problem
+    Right Nothing => Right ()
+    Right (Just extension) =>
+      case parse_server_key_share extension of
+        Left problem => Left problem
+        Right _ => Right ()
+
+validate_optional_selected_psk : List tls_extension → Either String ()
+validate_optional_selected_psk extensions =
+  case find_single_extension pre_shared_key_code extensions of
+    Left problem => Left problem
+    Right Nothing => Right ()
+    Right (Just extension) =>
+      case parse_server_selected_psk extension of
+        Left problem => Left problem
+        Right _ => Right ()
+
+public export
+validate_negotiated_server_hello_extensions :
+  List tls_extension →
+  Either String ()
+validate_negotiated_server_hello_extensions extensions =
+  let has_share = extension_present key_share_code extensions
+      has_psk = extension_present pre_shared_key_code extensions in
+    if not has_share && not has_psk
+      then Left "TLS 1.3 ServerHello requires key_share, pre_shared_key, or both"
+      else case validate_optional_server_key_share extensions of
+        Left problem => Left problem
+        Right () => validate_optional_selected_psk extensions
+
+public export
+validate_hello_retry_extensions :
+  List tls_extension →
+  Either String ()
+validate_hello_retry_extensions extensions =
+  if extension_present pre_shared_key_code extensions
+    then Left "HelloRetryRequest must not select a pre_shared_key identity"
+    else case find_single_extension key_share_code extensions of
+      Left problem => Left problem
+      Right Nothing => Right ()
+      Right (Just extension) =>
+        case parse_hello_retry_group extension of
+          Left problem => Left problem
+          Right _ => Right ()

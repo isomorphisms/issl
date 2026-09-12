@@ -1,0 +1,516 @@
+module Main
+
+import TLS.Record
+import TLS.Handshake
+import TLS.Extension
+import TLS.Negotiation
+import TLS.Hello
+import TLS.Alert
+import TLS.KeyUpdate
+import TLS.ClientState
+import TLS.KdfLabel
+import TLS.Transcript
+import System
+
+%default total
+
+check : String → Bool → IO ()
+check name True = putStrLn ("ok   " ++ name)
+check name False = putStrLn ("FAIL " ++ name)
+
+content_type_semantics : Bool
+content_type_semantics =
+  case ( content_type_from_wire 20
+       , content_type_from_wire 21
+       , content_type_from_wire 22
+       , content_type_from_wire 23
+       , content_type_from_wire 19
+       ) of
+    ( Right change_cipher_spec
+      , Right alert
+      , Right handshake
+      , Right application_data
+      , Left _
+      ) =>
+        content_type_wire change_cipher_spec == 20 &&
+        content_type_wire alert == 21 &&
+        content_type_wire handshake == 22 &&
+        content_type_wire application_data == 23
+    _ => False
+
+record_header_semantics : Bool
+record_header_semantics =
+  case parse_record_header [23, 3, 3, 0, 42, 99] of
+    Right
+      (MkParsedRecordHeader
+        (MkRecordHeader application_data 3 3 42)
+        [99]) => True
+    _ => False
+
+record_payload_semantics : Bool
+record_payload_semantics =
+  case parse_tls_record [23, 3, 3, 0, 3, 1, 2, 3, 99, 100] of
+    Right
+      (MkParsedTlsRecord
+        (MkTlsRecord
+          (MkRecordHeader application_data 3 3 3)
+          [1, 2, 3])
+        [99, 100]) => True
+    _ => False
+
+truncated_record_refusal : Bool
+truncated_record_refusal =
+  case parse_tls_record [23, 3, 3, 0, 3, 1, 2] of
+    Left _ => True
+    _ => False
+
+tls13_outer_rules : Bool
+tls13_outer_rules =
+  let good = MkRecordHeader application_data 3 3 16640
+      too_large = MkRecordHeader application_data 3 3 16641
+      wrong_version = MkRecordHeader application_data 3 1 20
+      wrong_type = MkRecordHeader handshake 3 3 20 in
+    case ( validate_tls13_ciphertext_header good
+         , validate_tls13_ciphertext_header too_large
+         , validate_tls13_ciphertext_header wrong_version
+         , validate_tls13_ciphertext_header wrong_type
+         ) of
+      (Right (MkTls13CiphertextHeader 16640), Left _, Left _, Left _) => True
+      _ => False
+
+inner_plaintext_semantics : Bool
+inner_plaintext_semantics =
+  case parse_tls13_inner_plaintext [1, 2, 3, 22, 0, 0] of
+    Right (MkTls13InnerPlaintext inner_handshake [1, 2, 3] 2) => True
+    _ => False
+
+inner_plaintext_refusals : Bool
+inner_plaintext_refusals =
+  case ( parse_tls13_inner_plaintext []
+       , parse_tls13_inner_plaintext [0, 0, 0]
+       , parse_tls13_inner_plaintext [20]
+       , parse_tls13_inner_plaintext [99]
+       ) of
+    (Left _, Left _, Left _, Left _) => True
+    _ => False
+
+handshake_header_semantics : Bool
+handshake_header_semantics =
+  case parse_handshake_header [1, 0, 0, 4, 10, 20, 30, 40] of
+    Right
+      (MkParsedHandshakeHeader
+        (MkHandshakeHeader client_hello 4)
+        [10, 20, 30, 40]) => True
+    _ => False
+
+handshake_message_semantics : Bool
+handshake_message_semantics =
+  case parse_handshake_message [20, 0, 0, 2, 9, 8, 99] of
+    Right
+      (MkParsedHandshakeMessage
+        (MkHandshakeMessage finished [9, 8])
+        [20, 0, 0, 2, 9, 8]
+        [99]) => True
+    _ => False
+
+handshake_length_semantics : Bool
+handshake_length_semantics =
+  case parse_handshake_header [20, 255, 255, 255] of
+    Right (MkParsedHandshakeHeader (MkHandshakeHeader finished 16777215) []) => True
+    _ => False
+
+handshake_type_refusal : Bool
+handshake_type_refusal =
+  case ( parse_handshake_header [3, 0, 0, 0]
+       , parse_handshake_message [20, 0, 0, 2, 9]
+       ) of
+    (Left _, Left _) => True
+    _ => False
+
+extension_vector_semantics : Bool
+extension_vector_semantics =
+  case parse_extension_vector [0, 7, 0, 43, 0, 3, 2, 3, 4, 99] of
+    Right
+      (MkParsedExtensionVector
+        [MkTlsExtension 43 [2, 3, 4]]
+        [99]) => True
+    _ => False
+
+extension_duplicate_refusal : Bool
+extension_duplicate_refusal =
+  case parse_extension_vector
+    [0, 14,
+     0, 43, 0, 3, 2, 3, 4,
+     0, 43, 0, 3, 2, 3, 4] of
+      Left _ => True
+      _ => False
+
+supported_versions_semantics : Bool
+supported_versions_semantics =
+  case parse_client_supported_versions (MkTlsExtension 43 [2, 3, 4]) of
+    Right [MkProtocolVersion 3 4] => True
+    _ => False
+
+negotiation_extension_semantics : Bool
+negotiation_extension_semantics =
+  case ( parse_supported_groups (MkTlsExtension 10 [0, 2, 0, 23])
+       , parse_signature_algorithms (MkTlsExtension 13 [0, 2, 8, 4])
+       , parse_client_key_share (MkTlsExtension 51 [0, 0])
+       , parse_psk_key_exchange_modes (MkTlsExtension 45 [1, 1])
+       ) of
+    ( Right [secp256r1]
+      , Right [rsa_pss_rsae_sha256]
+      , Right []
+      , Right [psk_dhe_ke]
+      ) => True
+    _ => False
+
+negotiation_extension_refusals : Bool
+negotiation_extension_refusals =
+  case ( parse_supported_groups (MkTlsExtension 10 [0, 4, 0, 23, 0, 23])
+       , parse_client_key_share
+           (MkTlsExtension 51
+             [0, 10,
+              0, 29, 0, 1, 1,
+              0, 29, 0, 1, 2])
+       , parse_psk_key_exchange_modes (MkTlsExtension 45 [0])
+       ) of
+    (Left _, Left _, Left _) => True
+    _ => False
+
+kdf_label_semantics : Bool
+kdf_label_semantics =
+  case make_hkdf_label 16 traffic_key [] of
+    Left _ => False
+    Right label =>
+      encode_hkdf_label label ==
+        [0, 16, 9, 116, 108, 115, 49, 51, 32, 107, 101, 121, 0]
+
+zero_random : List Bits8
+zero_random =
+  [0, 0, 0, 0, 0, 0, 0, 0,
+   0, 0, 0, 0, 0, 0, 0, 0,
+   0, 0, 0, 0, 0, 0, 0, 0,
+   0, 0, 0, 0, 0, 0, 0, 0]
+
+minimal_client_extensions : List Bits8
+minimal_client_extensions =
+  [0, 29,
+   0, 43, 0, 3, 2, 3, 4,
+   0, 13, 0, 4, 0, 2, 8, 4,
+   0, 10, 0, 4, 0, 2, 0, 23,
+   0, 51, 0, 2, 0, 0]
+
+minimal_client_hello : List Bits8
+minimal_client_hello =
+  [3, 3] ++ zero_random ++
+  [0, 0, 2, 19, 1, 1, 0] ++
+  minimal_client_extensions
+
+client_hello_semantics : Bool
+client_hello_semantics =
+  case parse_tls13_client_hello minimal_client_hello of
+    Right
+      (MkTls13ClientHello
+        random
+        []
+        [MkCipherSuiteCode 4865]
+        extensions) =>
+          length random == 32 && length extensions == 4
+    _ => False
+
+client_hello_refusals : Bool
+client_hello_refusals =
+  let bad_compression =
+        [3, 3] ++ zero_random ++
+        [0, 0, 2, 19, 1, 1, 1] ++
+        minimal_client_extensions
+      missing_versions =
+        [3, 3] ++ zero_random ++
+        [0, 0, 2, 19, 1, 1, 0,
+         0, 22,
+         0, 13, 0, 4, 0, 2, 8, 4,
+         0, 10, 0, 4, 0, 2, 0, 23,
+         0, 51, 0, 2, 0, 0]
+      missing_negotiation =
+        [3, 3] ++ zero_random ++
+        [0, 0, 2, 19, 1, 1, 0,
+         0, 7, 0, 43, 0, 3, 2, 3, 4]
+      duplicate_versions =
+        [3, 3] ++ zero_random ++
+        [0, 0, 2, 19, 1, 1, 0,
+         0, 14,
+         0, 43, 0, 3, 2, 3, 4,
+         0, 43, 0, 3, 2, 3, 4] in
+    case ( parse_tls13_client_hello bad_compression
+         , parse_tls13_client_hello missing_versions
+         , parse_tls13_client_hello missing_negotiation
+         , parse_tls13_client_hello duplicate_versions
+         ) of
+      (Left _, Left _, Left _, Left _) => True
+      _ => False
+
+minimal_server_hello : List Bits8
+minimal_server_hello =
+  [3, 3] ++ zero_random ++
+  [0,
+   19, 1,
+   0,
+   0, 12,
+   0, 43, 0, 2, 3, 4,
+   0, 41, 0, 2, 0, 0]
+
+hello_retry_random : List Bits8
+hello_retry_random =
+  [207, 33, 173, 116, 229, 154, 97, 17,
+   190, 29, 140, 2, 30, 101, 184, 145,
+   194, 162, 17, 22, 122, 187, 140, 94,
+   7, 158, 9, 226, 200, 168, 51, 156]
+
+server_hello_semantics : Bool
+server_hello_semantics =
+  case parse_tls13_server_hello minimal_server_hello of
+    Right
+      (MkTls13ServerHello
+        negotiated_server_hello
+        random
+        []
+        (MkCipherSuiteCode 4865)
+        tls_aes_128_gcm_sha256
+        [MkTlsExtension 43 [3, 4], MkTlsExtension 41 [0, 0]]) =>
+          length random == 32
+    _ => False
+
+hello_retry_body : List Bits8
+hello_retry_body =
+  [3, 3] ++ hello_retry_random ++
+  [0, 19, 1, 0, 0, 6, 0, 43, 0, 2, 3, 4]
+
+hello_retry_semantics : Bool
+hello_retry_semantics =
+  case parse_tls13_server_hello hello_retry_body of
+    Right (MkTls13ServerHello hello_retry_request _ _ _ _ _) => True
+    _ => False
+
+hello_retry_transcript_semantics : Bool
+hello_retry_transcript_semantics =
+  case ( make_transcript_hash transcript_sha256 zero_random
+       , parse_handshake_message ([2, 0, 0, 46] ++ hello_retry_body)
+       ) of
+    (Right first_hash, Right retry) =>
+      case hello_retry_transcript first_hash retry of
+        Left _ => False
+        Right transcript =>
+          case transcript.transcript_bytes of
+            254 :: 0 :: 0 :: 32 :: _ =>
+              length transcript.transcript_bytes == 86
+            _ => False
+    _ => False
+
+server_hello_refusals : Bool
+server_hello_refusals =
+  let bad_compression =
+        [3, 3] ++ zero_random ++
+        [0, 19, 1, 1, 0, 6, 0, 43, 0, 2, 3, 4]
+      unknown_suite =
+        [3, 3] ++ zero_random ++
+        [0, 19, 6, 0, 0, 6, 0, 43, 0, 2, 3, 4]
+      missing_versions =
+        [3, 3] ++ zero_random ++
+        [0, 19, 1, 0, 0, 0]
+      no_keying_context =
+        [3, 3] ++ zero_random ++
+        [0, 19, 1, 0, 0, 6, 0, 43, 0, 2, 3, 4] in
+    case ( parse_tls13_server_hello bad_compression
+         , parse_tls13_server_hello unknown_suite
+         , parse_tls13_server_hello missing_versions
+         , parse_tls13_server_hello no_keying_context
+         ) of
+      (Left _, Left _, Left _, Left _) => True
+      _ => False
+
+alert_semantics : Bool
+alert_semantics =
+  case ( parse_tls_alert [1, 0]
+       , parse_tls_alert [2, 117]
+       , parse_tls_alert [1, 250]
+       ) of
+    ( Right close
+      , Right general
+      , Right unknown
+      ) =>
+        case (alert_effect close, alert_effect general, alert_effect unknown) of
+          ( Right peer_closed_write
+            , Right fatal_connection_error
+            , Right fatal_connection_error
+            ) => True
+          _ => False
+    _ => False
+
+alert_refusals : Bool
+alert_refusals =
+  case (parse_tls_alert [1], parse_tls_alert [2, 0]) of
+    (Left _, Right close) =>
+      case alert_effect close of
+        Left _ => True
+        _ => False
+    _ => False
+
+key_update_semantics : Bool
+key_update_semantics =
+  case sent_key_update initial_key_update_state update_requested of
+    Left _ => False
+    Right waiting =>
+      case sent_key_update waiting update_requested of
+        Right _ => False
+        Left _ =>
+          let received = received_key_update waiting update_requested in
+            if application_data_may_be_sent received
+              then False
+              else case send_required_key_update_response received of
+                Left _ => False
+                Right cleared => application_data_may_be_sent cleared
+
+key_update_refusals : Bool
+key_update_refusals =
+  case ( parse_key_update_request [0]
+       , parse_key_update_request [1]
+       , parse_key_update_request [2]
+       , parse_key_update_request []
+       ) of
+    (Right update_not_requested, Right update_requested, Left _, Left _) => True
+    _ => False
+
+run_client_events :
+  client_handshake_state →
+  List client_handshake_event →
+  Either String client_handshake_state
+run_client_events state [] = Right state
+run_client_events state (event :: rest) =
+  case advance_client_handshake state event of
+    Left problem => Left problem
+    Right next => run_client_events next rest
+
+client_certificate_path : Bool
+client_certificate_path =
+  case run_client_events
+    initial_client_handshake_state
+    [ received_server_hello
+    , received_encrypted_extensions
+    , received_server_certificate
+    , received_server_certificate_verify
+    , received_server_finished
+    , sent_client_finished
+    ] of
+      Right handshake_established => True
+      _ => False
+
+client_authentication_path : Bool
+client_authentication_path =
+  case run_client_events
+    initial_client_handshake_state
+    [ received_server_hello
+    , received_encrypted_extensions
+    , received_certificate_request
+    , received_server_certificate
+    , received_server_certificate_verify
+    , received_server_finished
+    , sent_client_certificate
+    , sent_client_certificate_verify
+    , sent_client_finished
+    ] of
+      Right handshake_established => True
+      _ => False
+
+client_psk_path : Bool
+client_psk_path =
+  case run_client_events
+    initial_client_handshake_state
+    [ received_server_hello
+    , received_encrypted_extensions
+    , received_server_finished
+    , sent_client_finished
+    ] of
+      Right handshake_established => True
+      _ => False
+
+client_state_refusals : Bool
+client_state_refusals =
+  case ( run_client_events
+           initial_client_handshake_state
+           [received_hello_retry_request, received_hello_retry_request]
+       , run_client_events
+           initial_client_handshake_state
+           [received_server_finished]
+       ) of
+    (Left _, Left _) => True
+    _ => False
+
+all_pass : Bool
+all_pass =
+  content_type_semantics &&
+  record_header_semantics &&
+  record_payload_semantics &&
+  truncated_record_refusal &&
+  tls13_outer_rules &&
+  inner_plaintext_semantics &&
+  inner_plaintext_refusals &&
+  handshake_header_semantics &&
+  handshake_message_semantics &&
+  handshake_length_semantics &&
+  handshake_type_refusal &&
+  extension_vector_semantics &&
+  extension_duplicate_refusal &&
+  supported_versions_semantics &&
+  negotiation_extension_semantics &&
+  negotiation_extension_refusals &&
+  kdf_label_semantics &&
+  client_hello_semantics &&
+  client_hello_refusals &&
+  server_hello_semantics &&
+  hello_retry_semantics &&
+  hello_retry_transcript_semantics &&
+  server_hello_refusals &&
+  alert_semantics &&
+  alert_refusals &&
+  key_update_semantics &&
+  key_update_refusals &&
+  client_certificate_path &&
+  client_authentication_path &&
+  client_psk_path &&
+  client_state_refusals
+
+main : IO ()
+main = do
+  check "TLS content-type domain" content_type_semantics
+  check "TLS record header parsing" record_header_semantics
+  check "TLS record payload boundary" record_payload_semantics
+  check "truncated TLS record refusal" truncated_record_refusal
+  check "TLS 1.3 outer record rules" tls13_outer_rules
+  check "TLS 1.3 inner plaintext extraction" inner_plaintext_semantics
+  check "TLS 1.3 inner plaintext refusals" inner_plaintext_refusals
+  check "TLS 1.3 handshake header parsing" handshake_header_semantics
+  check "TLS complete handshake message framing" handshake_message_semantics
+  check "TLS handshake 24-bit length" handshake_length_semantics
+  check "TLS handshake framing refusals" handshake_type_refusal
+  check "TLS extension vector framing" extension_vector_semantics
+  check "duplicate TLS extension refusal" extension_duplicate_refusal
+  check "client supported_versions parsing" supported_versions_semantics
+  check "TLS negotiation extension parsing" negotiation_extension_semantics
+  check "TLS negotiation extension refusals" negotiation_extension_refusals
+  check "TLS HKDF label framing" kdf_label_semantics
+  check "TLS 1.3 ClientHello parsing" client_hello_semantics
+  check "TLS 1.3 ClientHello refusals" client_hello_refusals
+  check "TLS 1.3 ServerHello parsing" server_hello_semantics
+  check "HelloRetryRequest recognition" hello_retry_semantics
+  check "HelloRetryRequest transcript rewrite" hello_retry_transcript_semantics
+  check "TLS 1.3 ServerHello refusals" server_hello_refusals
+  check "TLS 1.3 alert semantics" alert_semantics
+  check "TLS 1.3 alert refusals" alert_refusals
+  check "TLS 1.3 KeyUpdate obligations" key_update_semantics
+  check "TLS 1.3 KeyUpdate refusals" key_update_refusals
+  check "TLS client certificate handshake path" client_certificate_path
+  check "TLS client authentication handshake path" client_authentication_path
+  check "TLS client PSK handshake path" client_psk_path
+  check "TLS client handshake ordering refusals" client_state_refusals
+  if all_pass then pure () else exitFailure

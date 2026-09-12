@@ -1,0 +1,233 @@
+module TLS.AuthMessages
+
+import TLS.Extension
+import TLS.Negotiation
+import TLS.SuiteParameters
+
+%default total
+
+wire_u16 : Bits8 → Bits8 → ℕ
+wire_u16 high low = cast high * 256 + cast low
+
+wire_u24 : Bits8 → Bits8 → Bits8 → ℕ
+wire_u24 high middle low =
+  cast high * 65536 + cast middle * 256 + cast low
+
+take_bytes_exact : ℕ → List Bits8 → Maybe (List Bits8, List Bits8)
+take_bytes_exact 0 bytes = Just ([], bytes)
+take_bytes_exact (S remaining) [] = Nothing
+take_bytes_exact (S remaining) (byte :: rest) =
+  case take_bytes_exact remaining rest of
+    Nothing => Nothing
+    Just (taken, trailing) => Just (byte :: taken, trailing)
+
+public export
+record encrypted_extensions where
+  constructor MkEncryptedExtensions
+  encrypted_extension_values : List tls_extension
+
+public export
+parse_encrypted_extensions : List Bits8 → Either String encrypted_extensions
+parse_encrypted_extensions bytes =
+  case parse_extension_vector bytes of
+    Left problem => Left problem
+    Right (MkParsedExtensionVector extensions []) =>
+      Right (MkEncryptedExtensions extensions)
+    Right (MkParsedExtensionVector _ _) =>
+      Left "bytes remain after EncryptedExtensions"
+
+public export
+record certificate_request where
+  constructor MkCertificateRequest
+  certificate_request_context : List Bits8
+  certificate_request_extensions : List tls_extension
+
+public export
+parse_certificate_request : List Bits8 → Either String certificate_request
+parse_certificate_request [] =
+  Left "CertificateRequest is missing certificate_request_context length"
+parse_certificate_request (context_length :: rest) =
+  let context_length_number : ℕ = cast context_length in
+    case take_bytes_exact context_length_number rest of
+      Nothing => Left "CertificateRequest context is truncated"
+      Just (context, extension_bytes) =>
+        case parse_extension_vector extension_bytes of
+          Left problem => Left problem
+          Right (MkParsedExtensionVector extensions []) =>
+            Right (MkCertificateRequest context extensions)
+          Right (MkParsedExtensionVector _ _) =>
+            Left "bytes remain after CertificateRequest extensions"
+
+public export
+validate_main_handshake_certificate_request :
+  certificate_request →
+  Either String ()
+validate_main_handshake_certificate_request request =
+  if request.certificate_request_context /= []
+    then Left "main-handshake CertificateRequest context must be empty"
+    else case find_single_extension signature_algorithms_code request.certificate_request_extensions of
+      Left problem => Left problem
+      Right Nothing => Left "CertificateRequest requires signature_algorithms"
+      Right (Just extension) =>
+        case parse_signature_algorithms extension of
+          Left problem => Left problem
+          Right _ => Right ()
+
+public export
+record certificate_entry where
+  constructor MkCertificateEntry
+  certificate_bytes : List Bits8
+  certificate_extensions : List tls_extension
+
+parse_certificate_entries_with_fuel :
+  ℕ →
+  List Bits8 →
+  Either String (List certificate_entry)
+parse_certificate_entries_with_fuel _ [] = Right []
+parse_certificate_entries_with_fuel 0 _ =
+  Left "Certificate entry parser exhausted its input bound"
+parse_certificate_entries_with_fuel
+  (S fuel)
+  (length_high :: length_middle :: length_low :: rest) =
+    let certificate_length = wire_u24 length_high length_middle length_low in
+      if certificate_length == 0
+        then Left "CertificateEntry certificate data must not be empty"
+        else case take_bytes_exact certificate_length rest of
+          Nothing => Left "CertificateEntry certificate data is truncated"
+          Just (certificate, extension_bytes) =>
+            case parse_extension_vector extension_bytes of
+              Left problem => Left problem
+              Right (MkParsedExtensionVector extensions trailing) =>
+                case parse_certificate_entries_with_fuel fuel trailing of
+                  Left problem => Left problem
+                  Right entries =>
+                    Right (MkCertificateEntry certificate extensions :: entries)
+parse_certificate_entries_with_fuel (S _) _ =
+  Left "CertificateEntry is missing its three-byte certificate length"
+
+parse_certificate_entries : List Bits8 → Either String (List certificate_entry)
+parse_certificate_entries bytes =
+  parse_certificate_entries_with_fuel (length bytes) bytes
+
+public export
+record certificate_message where
+  constructor MkCertificateMessage
+  certificate_message_context : List Bits8
+  certificate_entries : List certificate_entry
+
+public export
+parse_certificate_message : List Bits8 → Either String certificate_message
+parse_certificate_message [] = Left "Certificate is missing certificate_request_context length"
+parse_certificate_message (context_length :: rest) =
+  let context_length_number : ℕ = cast context_length in
+    case take_bytes_exact context_length_number rest of
+      Nothing => Left "Certificate context is truncated"
+      Just (context, list_bytes) =>
+        case list_bytes of
+          list_high :: list_middle :: list_low :: rest_entries =>
+            let list_length = wire_u24 list_high list_middle list_low in
+              if list_length /= length rest_entries
+                then Left "Certificate certificate_list length does not match its payload"
+                else case parse_certificate_entries rest_entries of
+                  Left problem => Left problem
+                  Right entries => Right (MkCertificateMessage context entries)
+          _ => Left "Certificate is missing certificate_list length"
+
+public export
+validate_server_certificate_message : certificate_message → Either String ()
+validate_server_certificate_message message =
+  if message.certificate_message_context /= []
+    then Left "server Certificate context must be empty"
+    else case message.certificate_entries of
+      [] => Left "server Certificate list must not be empty"
+      _ => Right ()
+
+public export
+validate_client_certificate_response :
+  certificate_request →
+  certificate_message →
+  Either String ()
+validate_client_certificate_response request message =
+  if request.certificate_request_context == message.certificate_message_context
+    then Right ()
+    else Left "client Certificate context does not match CertificateRequest"
+
+public export
+record certificate_verify where
+  constructor MkCertificateVerify
+  certificate_verify_algorithm : signature_scheme
+  certificate_verify_signature : List Bits8
+
+public export
+parse_certificate_verify : List Bits8 → Either String certificate_verify
+parse_certificate_verify
+  (algorithm_high :: algorithm_low :: length_high :: length_low :: rest) =
+    let signature_length = wire_u16 length_high length_low in
+      if signature_length /= length rest
+        then Left "CertificateVerify signature length does not match its payload"
+        else Right
+          (MkCertificateVerify
+            (signature_scheme_from_code
+              (cast algorithm_high * 256 + cast algorithm_low))
+            rest)
+parse_certificate_verify _ = Left "CertificateVerify header is truncated"
+
+public export
+choice certificate_verify_sender one_of
+  server_certificate_verify
+  client_certificate_verify
+
+server_certificate_verify_context : List Bits8
+server_certificate_verify_context =
+  [84, 76, 83, 32, 49, 46, 51, 44, 32, 115, 101, 114, 118, 101, 114, 32,
+   67, 101, 114, 116, 105, 102, 105, 99, 97, 116, 101, 86, 101, 114, 105, 102,
+   121]
+
+client_certificate_verify_context : List Bits8
+client_certificate_verify_context =
+  [84, 76, 83, 32, 49, 46, 51, 44, 32, 99, 108, 105, 101, 110, 116, 32,
+   67, 101, 114, 116, 105, 102, 105, 99, 97, 116, 101, 86, 101, 114, 105, 102,
+   121]
+
+spaces_64 : List Bits8
+spaces_64 =
+  [32, 32, 32, 32, 32, 32, 32, 32,
+   32, 32, 32, 32, 32, 32, 32, 32,
+   32, 32, 32, 32, 32, 32, 32, 32,
+   32, 32, 32, 32, 32, 32, 32, 32,
+   32, 32, 32, 32, 32, 32, 32, 32,
+   32, 32, 32, 32, 32, 32, 32, 32,
+   32, 32, 32, 32, 32, 32, 32, 32,
+   32, 32, 32, 32, 32, 32, 32, 32]
+
+certificate_verify_context_bytes : certificate_verify_sender → List Bits8
+certificate_verify_context_bytes server_certificate_verify =
+  server_certificate_verify_context
+certificate_verify_context_bytes client_certificate_verify =
+  client_certificate_verify_context
+
+public export
+certificate_verify_signed_content :
+  certificate_verify_sender →
+  List Bits8 →
+  List Bits8
+certificate_verify_signed_content sender transcript_hash =
+  spaces_64 ++
+  certificate_verify_context_bytes sender ++
+  [0] ++
+  transcript_hash
+
+public export
+record finished_message where
+  constructor MkFinishedMessage
+  finished_verify_data : List Bits8
+
+public export
+parse_finished :
+  tls13_hash_algorithm →
+  List Bits8 →
+  Either String finished_message
+parse_finished algorithm bytes =
+  if length bytes == hash_output_length algorithm
+    then Right (MkFinishedMessage bytes)
+    else Left "Finished verify_data length does not match the handshake hash"

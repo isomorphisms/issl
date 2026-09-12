@@ -1,0 +1,290 @@
+module TLS.ConnectionNegotiation
+
+import TLS.Extension
+import TLS.PSK
+import TLS.Negotiation
+import TLS.ServerNegotiation
+import TLS.Hello
+
+%default total
+
+extension_present : Bits16 → List tls_extension → Bool
+extension_present wanted [] = False
+extension_present wanted (extension :: rest) =
+  extension.extension_type_code == wanted || extension_present wanted rest
+
+suite_present : cipher_suite_code → List cipher_suite_code → Bool
+suite_present wanted [] = False
+suite_present wanted (suite :: rest) =
+  wanted.cipher_suite_code_bits == suite.cipher_suite_code_bits ||
+  suite_present wanted rest
+
+version_equal : protocol_version → protocol_version → Bool
+version_equal
+  (MkProtocolVersion left_major left_minor)
+  (MkProtocolVersion right_major right_minor) =
+    left_major == right_major && left_minor == right_minor
+
+version_present : protocol_version → List protocol_version → Bool
+version_present wanted [] = False
+version_present wanted (version :: rest) =
+  version_equal wanted version || version_present wanted rest
+
+share_group_present : named_group → List key_share_entry → Bool
+share_group_present wanted [] = False
+share_group_present wanted (share :: rest) =
+  named_group_code wanted == named_group_code share.key_share_group ||
+  share_group_present wanted rest
+
+named_group_present : named_group → List named_group → Bool
+named_group_present wanted [] = False
+named_group_present wanted (group :: rest) =
+  named_group_code wanted == named_group_code group ||
+  named_group_present wanted rest
+
+shares_follow_group_order :
+  List key_share_entry →
+  List named_group →
+  Bool
+shares_follow_group_order [] _ = True
+shares_follow_group_order _ [] = False
+shares_follow_group_order shares@(share :: remaining_shares) (group :: remaining_groups) =
+  if named_group_code share.key_share_group == named_group_code group
+    then shares_follow_group_order remaining_shares remaining_groups
+    else shares_follow_group_order shares remaining_groups
+
+public export
+validate_client_key_share_order : tls13_client_hello → Either String ()
+validate_client_key_share_order client =
+  case ( find_single_extension supported_groups_code client.client_extensions
+       , find_single_extension key_share_code client.client_extensions
+       ) of
+    (Left problem, _) => Left problem
+    (_, Left problem) => Left problem
+    (Right Nothing, Right Nothing) => Right ()
+    (Right (Just groups_extension), Right (Just shares_extension)) =>
+      case (parse_supported_groups groups_extension, parse_client_key_share shares_extension) of
+        (Left problem, _) => Left problem
+        (_, Left problem) => Left problem
+        (Right groups, Right shares) =>
+          if shares_follow_group_order shares groups
+            then Right ()
+            else Left "ClientHello key_share entries must be an ordered subset of supported_groups"
+    _ => Left "ClientHello supported_groups and key_share presence does not match"
+
+client_versions : tls13_client_hello → Either String (List protocol_version)
+client_versions client =
+  case find_single_extension supported_versions_code client.client_extensions of
+    Left problem => Left problem
+    Right Nothing => Left "ClientHello has no supported_versions extension"
+    Right (Just extension) => parse_client_supported_versions extension
+
+server_version : tls13_server_hello → Either String protocol_version
+server_version server =
+  case find_single_extension supported_versions_code server.server_extensions of
+    Left problem => Left problem
+    Right Nothing => Left "server hello has no supported_versions extension"
+    Right (Just extension) => parse_server_supported_version extension
+
+validate_selected_version :
+  tls13_client_hello →
+  tls13_server_hello →
+  Either String ()
+validate_selected_version client server =
+  case (client_versions client, server_version server) of
+    (Left problem, _) => Left problem
+    (_, Left problem) => Left problem
+    (Right offered, Right selected) =>
+      if version_present selected offered
+        then Right ()
+        else Left "server selected a TLS version not offered by the client"
+
+response_extension_was_requested :
+  tls13_server_hello_kind →
+  List tls_extension →
+  tls_extension →
+  Bool
+response_extension_was_requested hello_retry_request client_extensions extension =
+  if extension.extension_type_code == 44
+    then True
+    else extension_present extension.extension_type_code client_extensions
+response_extension_was_requested _ client_extensions extension =
+  extension_present extension.extension_type_code client_extensions
+
+all_response_extensions_were_requested :
+  tls13_server_hello_kind →
+  List tls_extension →
+  List tls_extension →
+  Bool
+all_response_extensions_were_requested _ _ [] = True
+all_response_extensions_were_requested kind client_extensions (extension :: rest) =
+  (extension.extension_type_code == supported_versions_code ||
+   response_extension_was_requested kind client_extensions extension) &&
+  all_response_extensions_were_requested kind client_extensions rest
+
+known_base_extension_allowed : tls13_server_hello_kind → Bits16 → Bool
+known_base_extension_allowed negotiated_server_hello code =
+  code /= signature_algorithms_code &&
+  code /= signature_algorithms_cert_code &&
+  code /= supported_groups_code &&
+  code /= psk_key_exchange_modes_code &&
+  code /= 44
+known_base_extension_allowed hello_retry_request code =
+  code /= signature_algorithms_code &&
+  code /= signature_algorithms_cert_code &&
+  code /= supported_groups_code &&
+  code /= psk_key_exchange_modes_code &&
+  code /= pre_shared_key_code
+
+all_known_base_extensions_allowed :
+  tls13_server_hello_kind →
+  List tls_extension →
+  Bool
+all_known_base_extensions_allowed _ [] = True
+all_known_base_extensions_allowed kind (extension :: rest) =
+  known_base_extension_allowed kind extension.extension_type_code &&
+  all_known_base_extensions_allowed kind rest
+
+validate_server_key_share_against_client :
+  tls13_client_hello →
+  tls13_server_hello →
+  Either String ()
+validate_server_key_share_against_client client server =
+  case find_single_extension key_share_code server.server_extensions of
+    Left problem => Left problem
+    Right Nothing => Right ()
+    Right (Just server_extension) =>
+      case find_single_extension key_share_code client.client_extensions of
+        Left problem => Left problem
+        Right Nothing => Left "server selected key_share when client offered none"
+        Right (Just client_extension) =>
+          case (parse_server_key_share server_extension, parse_client_key_share client_extension) of
+            (Left problem, _) => Left problem
+            (_, Left problem) => Left problem
+            (Right server_share, Right client_shares) =>
+              if share_group_present server_share.key_share_group client_shares
+                then Right ()
+                else Left "ServerHello key_share group was not present in the client's key shares"
+
+mode_present : psk_key_exchange_mode → List psk_key_exchange_mode → Bool
+mode_present _ [] = False
+mode_present psk_ke (psk_ke :: _) = True
+mode_present psk_dhe_ke (psk_dhe_ke :: _) = True
+mode_present wanted (_ :: rest) = mode_present wanted rest
+
+validate_server_psk_mode :
+  tls13_client_hello →
+  tls13_server_hello →
+  Either String ()
+validate_server_psk_mode client server =
+  case find_single_extension psk_key_exchange_modes_code client.client_extensions of
+    Left problem => Left problem
+    Right Nothing => Left "server selected PSK but client sent no psk_key_exchange_modes"
+    Right (Just modes_extension) =>
+      case parse_psk_key_exchange_modes modes_extension of
+        Left problem => Left problem
+        Right modes =>
+          let required_mode =
+                if extension_present key_share_code server.server_extensions
+                  then psk_dhe_ke
+                  else psk_ke in
+            if mode_present required_mode modes
+              then Right ()
+              else Left "server selected a PSK key exchange mode not offered by the client"
+
+validate_server_psk_against_client :
+  tls13_client_hello →
+  tls13_server_hello →
+  Either String ()
+validate_server_psk_against_client client server =
+  case find_single_extension pre_shared_key_code server.server_extensions of
+    Left problem => Left problem
+    Right Nothing => Right ()
+    Right (Just selected_extension) =>
+      case find_single_extension pre_shared_key_code client.client_extensions of
+        Left problem => Left problem
+        Right Nothing => Left "server selected a PSK when client offered none"
+        Right (Just offered_extension) =>
+          case ( parse_server_selected_psk selected_extension
+               , parse_client_pre_shared_key offered_extension
+               ) of
+            (Left problem, _) => Left problem
+            (_, Left problem) => Left problem
+            (Right selected, Right offered) =>
+              if cast selected >= offered_psk_count offered
+                then Left "server selected a PSK identity outside the client's offered range"
+                else validate_server_psk_mode client server
+
+validate_hello_retry_group_against_client :
+  tls13_client_hello →
+  tls13_server_hello →
+  Either String ()
+validate_hello_retry_group_against_client client retry =
+  case find_single_extension key_share_code retry.server_extensions of
+    Left problem => Left problem
+    Right Nothing =>
+      if extension_present 44 retry.server_extensions
+        then Right ()
+        else Left "HelloRetryRequest must change ClientHello through key_share or cookie"
+    Right (Just retry_extension) =>
+      case find_single_extension supported_groups_code client.client_extensions of
+        Left problem => Left problem
+        Right Nothing => Left "HelloRetryRequest selected a group but client offered no supported_groups"
+        Right (Just groups_extension) =>
+          case find_single_extension key_share_code client.client_extensions of
+            Left problem => Left problem
+            Right Nothing => Left "HelloRetryRequest selected a group but client offered no key_share extension"
+            Right (Just shares_extension) =>
+              case ( parse_hello_retry_group retry_extension
+                   , parse_supported_groups groups_extension
+                   , parse_client_key_share shares_extension
+                   ) of
+                (Left problem, _, _) => Left problem
+                (_, Left problem, _) => Left problem
+                (_, _, Left problem) => Left problem
+                (Right selected, Right groups, Right shares) =>
+                  if not (named_group_present selected groups)
+                    then Left "HelloRetryRequest selected a group not offered in supported_groups"
+                    else if share_group_present selected shares
+                      then Left "HelloRetryRequest selected a group already present in client key_share"
+                      else Right ()
+
+validate_negotiated_server_hello_against_client :
+  tls13_client_hello →
+  tls13_server_hello →
+  Either String ()
+validate_negotiated_server_hello_against_client client server =
+  case validate_server_key_share_against_client client server of
+    Left problem => Left problem
+    Right () => validate_server_psk_against_client client server
+
+public export
+validate_server_hello_against_client :
+  tls13_client_hello →
+  tls13_server_hello →
+  Either String ()
+validate_server_hello_against_client client server =
+  case validate_client_key_share_order client of
+    Left problem => Left problem
+    Right () =>
+      if client.client_legacy_session_id /= server.server_legacy_session_id_echo
+        then Left "ServerHello legacy session id echo does not match ClientHello"
+        else if not (suite_present server.server_cipher_suite_code client.client_cipher_suites)
+          then Left "server selected a cipher suite not offered by the client"
+          else if not
+            (all_known_base_extensions_allowed server.server_kind server.server_extensions)
+            then Left "server hello contains a base TLS extension invalid in this message"
+            else if not
+              (all_response_extensions_were_requested
+                server.server_kind
+                client.client_extensions
+                server.server_extensions)
+              then Left "server sent an extension response not requested by the client"
+              else case validate_selected_version client server of
+                Left problem => Left problem
+                Right () =>
+                  case server.server_kind of
+                    negotiated_server_hello =>
+                      validate_negotiated_server_hello_against_client client server
+                    hello_retry_request =>
+                      validate_hello_retry_group_against_client client server

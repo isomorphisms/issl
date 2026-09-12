@@ -1,0 +1,66 @@
+name: Idriç TLS rewrite
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: idric-tls-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  idric-tls:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout exact issl head
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Checkout pinned Idriç compiler
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: isomorphisms/Idric
+          ref: d2463ec8a3a0dd4ac167029927452f3e83805dc3
+          path: .tools/Idric
+
+      - name: Checkout Idris2 0.8.0 stage-zero compiler
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: idris-lang/Idris2
+          ref: 15a3e4e70843f7a34100f6470c04b791330788df
+          path: .tools/Idris2-stage0
+
+      - name: Install host build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            bash \
+            build-essential \
+            chezscheme \
+            coreutils \
+            libgmp-dev
+
+      - name: Bootstrap upstream Idris2 stage zero
+        run: |
+          make -C "$GITHUB_WORKSPACE/.tools/Idris2-stage0" bootstrap SCHEME=scheme
+          "$GITHUB_WORKSPACE/.tools/Idris2-stage0/build/exec/idris2" --version
+
+      - name: Build pinned Idriç compiler with stage zero
+        run: |
+          STAGE0="$GITHUB_WORKSPACE/.tools/Idris2-stage0/build/exec/idris2"
+          make -C "$GITHUB_WORKSPACE/.tools/Idric/_" idris2-exec \
+            IDRIS2_BOOT="$STAGE0" SCHEME=scheme
+          make -C "$GITHUB_WORKSPACE/.tools/Idric/_" bootstrap-libs \
+            IDRIS2_BOOT="$STAGE0" SCHEME=scheme
+          "$GITHUB_WORKSPACE/.tools/Idric/_/build/exec/idris2" --version
+
+      - name: Build and test Idriç TLS slice
+        env:
+          IDRIS2_PATH: ${{ github.workspace }}/.tools/Idric/_/libs/prelude/build/ttc:${{ github.workspace }}/.tools/Idric/_/libs/base/build/ttc:${{ github.workspace }}/.tools/Idric/_/libs/linear/build/ttc:${{ github.workspace }}/.tools/Idric/_/libs/network/build/ttc
+        run: |
+          make -f Makefile.idric idric-test \
+            IDRIC="$GITHUB_WORKSPACE/.tools/Idric/_/build/exec/idris2"

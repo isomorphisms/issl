@@ -30,7 +30,7 @@ choice tls_alert_description one_of
   access_denied
   decode_error
   decrypt_error
-  protocol_version
+  ProtocolVersion
   insufficient_security
   internal_error
   inappropriate_fallback
@@ -62,7 +62,7 @@ alert_description_from_wire 48 = unknown_ca
 alert_description_from_wire 49 = access_denied
 alert_description_from_wire 50 = decode_error
 alert_description_from_wire 51 = decrypt_error
-alert_description_from_wire 70 = protocol_version
+alert_description_from_wire 70 = ProtocolVersion
 alert_description_from_wire 71 = insufficient_security
 alert_description_from_wire 80 = internal_error
 alert_description_from_wire 86 = inappropriate_fallback
@@ -78,13 +78,13 @@ alert_description_from_wire 120 = no_application_protocol
 alert_description_from_wire value = unknown_alert_description value
 
 public export
-record tls_alert where
+record TlsAlert where
   constructor MkTlsAlert
   alert_level : tls_alert_level
   alert_description : tls_alert_description
 
 public export
-parse_tls_alert : List Bits8 → Either String tls_alert
+parse_tls_alert : List Bits8 → Either String TlsAlert
 parse_tls_alert [level, description] =
   case alert_level_from_wire level of
     Left problem => Left problem
@@ -99,7 +99,7 @@ choice tls_alert_effect one_of
   fatal_connection_error
 
 public export
-alert_effect : tls_alert → Either String tls_alert_effect
+alert_effect : TlsAlert → Either String tls_alert_effect
 alert_effect (MkTlsAlert warning close_notify) = Right peer_closed_write
 alert_effect (MkTlsAlert fatal close_notify) =
   Left "close_notify must use warning level in TLS 1.3"

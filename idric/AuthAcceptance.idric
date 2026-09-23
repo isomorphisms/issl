@@ -131,7 +131,7 @@ suite_parameter_semantics =
       ) => True
     _ => False
 
-one_psk_extension : tls_extension
+one_psk_extension : TlsExtension
 one_psk_extension =
   MkTlsExtension 41
     ([0, 7,
@@ -159,7 +159,7 @@ psk_binder_count_refusal =
       Left _ => True
       _ => False
 
-psk_client : tls13_client_hello
+psk_client : Tls13ClientHello
 psk_client =
   MkTls13ClientHello
     zeros_32
@@ -170,7 +170,7 @@ psk_client =
     , one_psk_extension
     ]
 
-psk_server : tls13_server_hello
+psk_server : Tls13ServerHello
 psk_server =
   MkTls13ServerHello
     negotiated_server_hello

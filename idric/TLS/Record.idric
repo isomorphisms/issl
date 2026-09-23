@@ -25,7 +25,7 @@ content_type_wire handshake = 22
 content_type_wire application_data = 23
 
 public export
-record record_header where
+record RecordHeader where
   constructor MkRecordHeader
   record_content_type : tls_content_type
   record_version_major : Bits8
@@ -33,16 +33,16 @@ record record_header where
   record_length_number : ℕ
 
 public export
-record parsed_record_header where
+record ParsedRecordHeader where
   constructor MkParsedRecordHeader
-  parsed_header : record_header
+  parsed_header : RecordHeader
   remaining_record_bytes : List Bits8
 
 wire_u16 : Bits8 → Bits8 → ℕ
 wire_u16 high low = cast high * 256 + cast low
 
 public export
-parse_record_header : List Bits8 → Either String parsed_record_header
+parse_record_header : List Bits8 → Either String ParsedRecordHeader
 parse_record_header (kind :: major :: minor :: length_high :: length_low :: rest) =
   case content_type_from_wire kind of
     Left problem => Left problem
@@ -58,19 +58,19 @@ parse_record_header (kind :: major :: minor :: length_high :: length_low :: rest
 parse_record_header _ = Left "TLS record header requires five bytes"
 
 public export
-record tls_record where
+record TlsRecord where
   constructor MkTlsRecord
-  tls_record_header : record_header
+  tls_record_header : RecordHeader
   tls_record_payload : List Bits8
 
 public export
-record parsed_tls_record where
+record ParsedTlsRecord where
   constructor MkParsedTlsRecord
-  parsed_record : tls_record
+  parsed_record : TlsRecord
   bytes_after_record : List Bits8
 
 public export
-parse_tls_record : List Bits8 → Either String parsed_tls_record
+parse_tls_record : List Bits8 → Either String ParsedTlsRecord
 parse_tls_record bytes =
   case parse_record_header bytes of
     Left problem => Left problem
@@ -90,12 +90,12 @@ tls13_ciphertext_limit : ℕ
 tls13_ciphertext_limit = 16640
 
 public export
-record tls13_ciphertext_header where
+record Tls13CiphertextHeader where
   constructor MkTls13CiphertextHeader
   tls13_ciphertext_length : ℕ
 
 public export
-validate_tls13_ciphertext_header : record_header → Either String tls13_ciphertext_header
+validate_tls13_ciphertext_header : RecordHeader → Either String Tls13CiphertextHeader
 validate_tls13_ciphertext_header header =
   case header.record_content_type of
     application_data =>
@@ -120,13 +120,13 @@ inner_content_type_from_wire 20 = Left "change_cipher_spec is not a TLS 1.3 inne
 inner_content_type_from_wire value = Left ("unknown TLS 1.3 inner content type " ++ show value)
 
 public export
-record tls13_inner_plaintext where
+record Tls13InnerPlaintext where
   constructor MkTls13InnerPlaintext
   inner_content_type : tls13_inner_content_type
   inner_content_bytes : List Bits8
   inner_padding_length : ℕ
 
-parse_reversed_inner : List Bits8 → ℕ → Either String tls13_inner_plaintext
+parse_reversed_inner : List Bits8 → ℕ → Either String Tls13InnerPlaintext
 parse_reversed_inner [] _ = Left "TLS 1.3 inner plaintext contains only zero padding"
 parse_reversed_inner (0 :: rest) padding = parse_reversed_inner rest (padding + 1)
 parse_reversed_inner (kind :: reversed_content) padding =
@@ -139,5 +139,5 @@ parse_reversed_inner (kind :: reversed_content) padding =
           else Right (MkTls13InnerPlaintext content_type content padding)
 
 public export
-parse_tls13_inner_plaintext : List Bits8 → Either String tls13_inner_plaintext
+parse_tls13_inner_plaintext : List Bits8 → Either String Tls13InnerPlaintext
 parse_tls13_inner_plaintext bytes = parse_reversed_inner (reverse bytes) 0

@@ -1,12 +1,14 @@
 module TLS.Extension
 
+import TLS.Wire
+
 %default total
 
 public export
 record protocol_version where
   constructor MkProtocolVersion
-  protocol_version_major : Bits8
-  protocol_version_minor : Bits8
+  protocol_version_major : Byte
+  protocol_version_minor : Byte
 
 public export
 tls13_version : protocol_version
@@ -15,56 +17,45 @@ tls13_version = MkProtocolVersion 3 4
 public export
 record tls_extension where
   constructor MkTlsExtension
-  extension_type_code : Bits16
-  extension_data : List Bits8
+  extension_type_code : WireCode
+  extension_data : bytes
 
 public export
-supported_versions_code : Bits16
+supported_versions_code : WireCode
 supported_versions_code = 43
 
 public export
-signature_algorithms_code : Bits16
+signature_algorithms_code : WireCode
 signature_algorithms_code = 13
 
 public export
-signature_algorithms_cert_code : Bits16
+signature_algorithms_cert_code : WireCode
 signature_algorithms_cert_code = 50
 
 public export
-supported_groups_code : Bits16
+supported_groups_code : WireCode
 supported_groups_code = 10
 
 public export
-key_share_code : Bits16
+key_share_code : WireCode
 key_share_code = 51
 
 public export
-pre_shared_key_code : Bits16
+pre_shared_key_code : WireCode
 pre_shared_key_code = 41
 
 public export
-psk_key_exchange_modes_code : Bits16
+psk_key_exchange_modes_code : WireCode
 psk_key_exchange_modes_code = 45
 
-wire_u16 : Bits8 → Bits8 → Bits16
-wire_u16 high low = cast high * 256 + cast low
-
-take_bytes_exact : ℕ → List Bits8 → Maybe (List Bits8, List Bits8)
-take_bytes_exact 0 bytes = Just ([], bytes)
-take_bytes_exact (S remaining) [] = Nothing
-take_bytes_exact (S remaining) (byte :: rest) =
-  case take_bytes_exact remaining rest of
-    Nothing => Nothing
-    Just (taken, trailing) => Just (byte :: taken, trailing)
-
-extension_code_present : Bits16 → List tls_extension → Bool
+extension_code_present : WireCode → List tls_extension → Bool
 extension_code_present wanted [] = False
 extension_code_present wanted (extension :: rest) =
   extension.extension_type_code == wanted || extension_code_present wanted rest
 
 parse_extension_entries_with_fuel :
   ℕ →
-  List Bits8 →
+  bytes →
   Either String (List tls_extension)
 parse_extension_entries_with_fuel _ [] = Right []
 parse_extension_entries_with_fuel 0 _ =
@@ -72,9 +63,9 @@ parse_extension_entries_with_fuel 0 _ =
 parse_extension_entries_with_fuel
   (S fuel)
   (type_high :: type_low :: length_high :: length_low :: rest) =
-    let data_length : ℕ = cast (wire_u16 length_high length_low)
-        extension_code = wire_u16 type_high type_low in
-      case take_bytes_exact data_length rest of
+    let data_length = u16_number length_high length_low
+        extension_code = u16_code type_high type_low in
+      case take_exact data_length rest of
         Nothing => Left "TLS extension data is truncated"
         Just (data_bytes, trailing) =>
           case parse_extension_entries_with_fuel fuel trailing of
@@ -87,21 +78,21 @@ parse_extension_entries_with_fuel
 parse_extension_entries_with_fuel (S _) _ =
   Left "TLS extension header is truncated"
 
-parse_extension_entries : List Bits8 → Either String (List tls_extension)
-parse_extension_entries bytes =
-  parse_extension_entries_with_fuel (length bytes) bytes
+parse_extension_entries : bytes → Either String (List tls_extension)
+parse_extension_entries input =
+  parse_extension_entries_with_fuel (length input) input
 
 public export
 record parsed_extension_vector where
   constructor MkParsedExtensionVector
   parsed_extensions : List tls_extension
-  bytes_after_extensions : List Bits8
+  bytes_after_extensions : bytes
 
 public export
-parse_extension_vector : List Bits8 → Either String parsed_extension_vector
+parse_extension_vector : bytes → Either String parsed_extension_vector
 parse_extension_vector (length_high :: length_low :: rest) =
-  let vector_length : ℕ = cast (wire_u16 length_high length_low) in
-    case take_bytes_exact vector_length rest of
+  let vector_length = u16_number length_high length_low in
+    case take_exact vector_length rest of
       Nothing => Left "TLS extension vector is truncated"
       Just (extension_bytes, trailing) =>
         case parse_extension_entries extension_bytes of
@@ -110,7 +101,7 @@ parse_extension_vector (length_high :: length_low :: rest) =
 parse_extension_vector _ = Left "TLS extension vector requires a two-byte length"
 
 public export
-find_single_extension : Bits16 → List tls_extension → Either String (Maybe tls_extension)
+find_single_extension : WireCode → List tls_extension → Either String (Maybe tls_extension)
 find_single_extension wanted [] = Right Nothing
 find_single_extension wanted (extension :: rest) =
   if extension.extension_type_code == wanted
@@ -120,7 +111,7 @@ find_single_extension wanted (extension :: rest) =
       Right (Just _) => Left "duplicate TLS extension"
     else find_single_extension wanted rest
 
-parse_protocol_versions : List Bits8 → Either String (List protocol_version)
+parse_protocol_versions : bytes → Either String (List protocol_version)
 parse_protocol_versions [] = Right []
 parse_protocol_versions (major :: minor :: rest) =
   case parse_protocol_versions rest of

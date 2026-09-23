@@ -8,10 +8,10 @@ choice tls13_handshake_type one_of
   server_hello
   new_session_ticket
   end_of_early_data
-  encrypted_extensions
+  EncryptedExtensions
   certificate
-  certificate_request
-  certificate_verify
+  CertificateRequest
+  CertificateVerify
   finished
   key_update
   message_hash
@@ -22,10 +22,10 @@ handshake_type_from_wire 1 = Right client_hello
 handshake_type_from_wire 2 = Right server_hello
 handshake_type_from_wire 4 = Right new_session_ticket
 handshake_type_from_wire 5 = Right end_of_early_data
-handshake_type_from_wire 8 = Right encrypted_extensions
+handshake_type_from_wire 8 = Right EncryptedExtensions
 handshake_type_from_wire 11 = Right certificate
-handshake_type_from_wire 13 = Right certificate_request
-handshake_type_from_wire 15 = Right certificate_verify
+handshake_type_from_wire 13 = Right CertificateRequest
+handshake_type_from_wire 15 = Right CertificateVerify
 handshake_type_from_wire 20 = Right finished
 handshake_type_from_wire 24 = Right key_update
 handshake_type_from_wire 254 = Right message_hash
@@ -37,10 +37,10 @@ handshake_type_wire client_hello = 1
 handshake_type_wire server_hello = 2
 handshake_type_wire new_session_ticket = 4
 handshake_type_wire end_of_early_data = 5
-handshake_type_wire encrypted_extensions = 8
+handshake_type_wire EncryptedExtensions = 8
 handshake_type_wire certificate = 11
-handshake_type_wire certificate_request = 13
-handshake_type_wire certificate_verify = 15
+handshake_type_wire CertificateRequest = 13
+handshake_type_wire CertificateVerify = 15
 handshake_type_wire finished = 20
 handshake_type_wire key_update = 24
 handshake_type_wire message_hash = 254
@@ -58,19 +58,19 @@ take_bytes_exact (S remaining) (byte :: rest) =
     Just (taken, trailing) => Just (byte :: taken, trailing)
 
 public export
-record handshake_header where
+record HandshakeHeader where
   constructor MkHandshakeHeader
   handshake_kind : tls13_handshake_type
   handshake_length_number : ℕ
 
 public export
-record parsed_handshake_header where
+record ParsedHandshakeHeader where
   constructor MkParsedHandshakeHeader
-  parsed_handshake : handshake_header
+  parsed_handshake : HandshakeHeader
   remaining_handshake_bytes : List Bits8
 
 public export
-parse_handshake_header : List Bits8 → Either String parsed_handshake_header
+parse_handshake_header : List Bits8 → Either String ParsedHandshakeHeader
 parse_handshake_header (kind :: length_high :: length_middle :: length_low :: rest) =
   case handshake_type_from_wire kind of
     Left problem => Left problem
@@ -84,20 +84,20 @@ parse_handshake_header (kind :: length_high :: length_middle :: length_low :: re
 parse_handshake_header _ = Left "TLS handshake header requires four bytes"
 
 public export
-record handshake_message where
+record HandshakeMessage where
   constructor MkHandshakeMessage
   message_kind : tls13_handshake_type
   message_body : List Bits8
 
 public export
-record parsed_handshake_message where
+record ParsedHandshakeMessage where
   constructor MkParsedHandshakeMessage
-  parsed_message : handshake_message
+  parsed_message : HandshakeMessage
   transcript_message_bytes : List Bits8
   bytes_after_handshake_message : List Bits8
 
 public export
-parse_handshake_message : List Bits8 → Either String parsed_handshake_message
+parse_handshake_message : List Bits8 → Either String ParsedHandshakeMessage
 parse_handshake_message
   (kind :: length_high :: length_middle :: length_low :: rest) =
     case handshake_type_from_wire kind of

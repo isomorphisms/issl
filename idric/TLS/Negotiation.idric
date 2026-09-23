@@ -76,7 +76,7 @@ has_duplicate_groups (group :: rest) =
   group_present (named_group_code group) rest || has_duplicate_groups rest
 
 public export
-parse_supported_groups : tls_extension → Either String (List named_group)
+parse_supported_groups : TlsExtension → Either String (List named_group)
 parse_supported_groups extension =
   if extension.extension_type_code /= supported_groups_code
     then Left "expected supported_groups extension"
@@ -146,7 +146,7 @@ parse_signature_schemes _ =
   Left "signature_algorithms contains a partial signature scheme"
 
 public export
-parse_signature_algorithms : tls_extension → Either String (List signature_scheme)
+parse_signature_algorithms : TlsExtension → Either String (List signature_scheme)
 parse_signature_algorithms extension =
   if extension.extension_type_code /= signature_algorithms_code &&
      extension.extension_type_code /= signature_algorithms_cert_code
@@ -164,12 +164,12 @@ parse_signature_algorithms extension =
       _ => Left "signature_algorithms is missing its vector length"
 
 public export
-record key_share_entry where
+record KeyShareEntry where
   constructor MkKeyShareEntry
   key_share_group : named_group
   key_exchange_bytes : List Bits8
 
-key_share_group_present : Bits16 → List key_share_entry → Bool
+key_share_group_present : Bits16 → List KeyShareEntry → Bool
 key_share_group_present wanted [] = False
 key_share_group_present wanted (share :: rest) =
   named_group_code share.key_share_group == wanted ||
@@ -178,7 +178,7 @@ key_share_group_present wanted (share :: rest) =
 parse_key_share_entries_with_fuel :
   ℕ →
   List Bits8 →
-  Either String (List key_share_entry)
+  Either String (List KeyShareEntry)
 parse_key_share_entries_with_fuel _ [] = Right []
 parse_key_share_entries_with_fuel 0 _ =
   Left "key_share parser exhausted its input bound"
@@ -201,12 +201,12 @@ parse_key_share_entries_with_fuel
 parse_key_share_entries_with_fuel (S _) _ =
   Left "key_share entry header is truncated"
 
-parse_key_share_entries : List Bits8 → Either String (List key_share_entry)
+parse_key_share_entries : List Bits8 → Either String (List KeyShareEntry)
 parse_key_share_entries bytes =
   parse_key_share_entries_with_fuel (length bytes) bytes
 
 public export
-parse_client_key_share : tls_extension → Either String (List key_share_entry)
+parse_client_key_share : TlsExtension → Either String (List KeyShareEntry)
 parse_client_key_share extension =
   if extension.extension_type_code /= key_share_code
     then Left "expected key_share extension"
@@ -219,7 +219,7 @@ parse_client_key_share extension =
       _ => Left "client key_share is missing its vector length"
 
 public export
-parse_server_key_share : tls_extension → Either String key_share_entry
+parse_server_key_share : TlsExtension → Either String KeyShareEntry
 parse_server_key_share extension =
   if extension.extension_type_code /= key_share_code
     then Left "expected key_share extension"
@@ -229,7 +229,7 @@ parse_server_key_share extension =
       Right _ => Left "ServerHello key_share must contain exactly one entry"
 
 public export
-parse_hello_retry_group : tls_extension → Either String named_group
+parse_hello_retry_group : TlsExtension → Either String named_group
 parse_hello_retry_group extension =
   if extension.extension_type_code /= key_share_code
     then Left "expected key_share extension"
@@ -254,7 +254,7 @@ parse_psk_modes (mode :: rest) = psk_mode_from_wire mode :: parse_psk_modes rest
 
 public export
 parse_psk_key_exchange_modes :
-  tls_extension →
+  TlsExtension →
   Either String (List psk_key_exchange_mode)
 parse_psk_key_exchange_modes extension =
   if extension.extension_type_code /= psk_key_exchange_modes_code
@@ -268,17 +268,17 @@ parse_psk_key_exchange_modes extension =
             then Left "psk_key_exchange_modes length does not match its payload"
             else Right (parse_psk_modes mode_bytes)
 
-extension_present : Bits16 → List tls_extension → Bool
+extension_present : Bits16 → List TlsExtension → Bool
 extension_present wanted [] = False
 extension_present wanted (extension :: rest) =
   extension.extension_type_code == wanted || extension_present wanted rest
 
-last_extension_is : Bits16 → List tls_extension → Bool
+last_extension_is : Bits16 → List TlsExtension → Bool
 last_extension_is wanted [] = False
 last_extension_is wanted [extension] = extension.extension_type_code == wanted
 last_extension_is wanted (_ :: rest) = last_extension_is wanted rest
 
-validate_optional_signature : List tls_extension → Either String ()
+validate_optional_signature : List TlsExtension → Either String ()
 validate_optional_signature extensions =
   case find_single_extension signature_algorithms_code extensions of
     Left problem => Left problem
@@ -288,7 +288,7 @@ validate_optional_signature extensions =
         Left problem => Left problem
         Right _ => Right ()
 
-validate_optional_groups : List tls_extension → Either String ()
+validate_optional_groups : List TlsExtension → Either String ()
 validate_optional_groups extensions =
   case find_single_extension supported_groups_code extensions of
     Left problem => Left problem
@@ -298,7 +298,7 @@ validate_optional_groups extensions =
         Left problem => Left problem
         Right _ => Right ()
 
-validate_optional_key_share : List tls_extension → Either String ()
+validate_optional_key_share : List TlsExtension → Either String ()
 validate_optional_key_share extensions =
   case find_single_extension key_share_code extensions of
     Left problem => Left problem
@@ -308,7 +308,7 @@ validate_optional_key_share extensions =
         Left problem => Left problem
         Right _ => Right ()
 
-validate_optional_psk_modes : List tls_extension → Either String ()
+validate_optional_psk_modes : List TlsExtension → Either String ()
 validate_optional_psk_modes extensions =
   case find_single_extension psk_key_exchange_modes_code extensions of
     Left problem => Left problem
@@ -318,7 +318,7 @@ validate_optional_psk_modes extensions =
         Left problem => Left problem
         Right _ => Right ()
 
-validate_negotiation_payloads : List tls_extension → Either String ()
+validate_negotiation_payloads : List TlsExtension → Either String ()
 validate_negotiation_payloads extensions =
   case validate_optional_signature extensions of
     Left problem => Left problem
@@ -332,7 +332,7 @@ validate_negotiation_payloads extensions =
 
 public export
 validate_tls13_client_negotiation_extensions :
-  List tls_extension →
+  List TlsExtension →
   Either String ()
 validate_tls13_client_negotiation_extensions extensions =
   let has_psk = extension_present pre_shared_key_code extensions

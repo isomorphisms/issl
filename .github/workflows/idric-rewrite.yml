@@ -27,13 +27,6 @@ jobs:
           ref: d2463ec8a3a0dd4ac167029927452f3e83805dc3
           path: .tools/Idric
 
-      - name: Checkout Idris2 0.8.0 stage-zero compiler
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-        with:
-          repository: idris-lang/Idris2
-          ref: 15a3e4e70843f7a34100f6470c04b791330788df
-          path: .tools/Idris2-stage0
-
       - name: Install host build tools
         run: |
           sudo apt-get update
@@ -44,18 +37,9 @@ jobs:
             coreutils \
             libgmp-dev
 
-      - name: Bootstrap upstream Idris2 stage zero
+      - name: Bootstrap pinned Idriç compiler
         run: |
-          make -C "$GITHUB_WORKSPACE/.tools/Idris2-stage0" bootstrap SCHEME=scheme
-          "$GITHUB_WORKSPACE/.tools/Idris2-stage0/build/exec/idris2" --version
-
-      - name: Build pinned Idriç compiler with stage zero
-        run: |
-          STAGE0="$GITHUB_WORKSPACE/.tools/Idris2-stage0/build/exec/idris2"
-          make -C "$GITHUB_WORKSPACE/.tools/Idric/_" idris2-exec \
-            IDRIS2_BOOT="$STAGE0" SCHEME=scheme
-          make -C "$GITHUB_WORKSPACE/.tools/Idric/_" bootstrap-libs \
-            IDRIS2_BOOT="$STAGE0" SCHEME=scheme
+          make -C "$GITHUB_WORKSPACE/.tools/Idric/_" bootstrap SCHEME=scheme
           "$GITHUB_WORKSPACE/.tools/Idric/_/build/exec/idris2" --version
 
       - name: Build and test Idriç TLS slice

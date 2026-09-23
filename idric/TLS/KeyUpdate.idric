@@ -1,0 +1,89 @@
+module TLS.KeyUpdate
+
+%default total
+
+public export
+choice key_update_request one_of
+  update_not_requested
+  update_requested
+
+public export
+parse_key_update_request : List Bits8 → Either String key_update_request
+parse_key_update_request [0] = Right update_not_requested
+parse_key_update_request [1] = Right update_requested
+parse_key_update_request [_] = Left "TLS KeyUpdate request_update must be 0 or 1"
+parse_key_update_request _ = Left "TLS KeyUpdate body must contain exactly one byte"
+
+public export
+choice update_request_permission one_of
+  may_request_peer_update
+  waiting_for_peer_update
+
+public export
+choice update_response_obligation one_of
+  no_update_response_owed
+  update_response_owed
+
+public export
+record key_update_state where
+  constructor MkKeyUpdateState
+  request_permission : update_request_permission
+  response_obligation : update_response_obligation
+
+public export
+initial_key_update_state : key_update_state
+initial_key_update_state =
+  MkKeyUpdateState may_request_peer_update no_update_response_owed
+
+public export
+sent_key_update :
+  key_update_state →
+  key_update_request →
+  Either String key_update_state
+sent_key_update
+  (MkKeyUpdateState waiting_for_peer_update obligation)
+  update_requested =
+    Left "cannot request another KeyUpdate before receiving the peer's next KeyUpdate"
+sent_key_update
+  (MkKeyUpdateState may_request_peer_update obligation)
+  update_requested =
+    Right (MkKeyUpdateState waiting_for_peer_update obligation)
+sent_key_update
+  (MkKeyUpdateState permission obligation)
+  update_not_requested =
+    Right (MkKeyUpdateState permission obligation)
+
+response_after_received_request :
+  update_response_obligation →
+  key_update_request →
+  update_response_obligation
+response_after_received_request _ update_requested = update_response_owed
+response_after_received_request obligation update_not_requested = obligation
+
+public export
+received_key_update :
+  key_update_state →
+  key_update_request →
+  key_update_state
+received_key_update (MkKeyUpdateState _ obligation) request =
+  MkKeyUpdateState
+    may_request_peer_update
+    (response_after_received_request obligation request)
+
+public export
+send_required_key_update_response :
+  key_update_state →
+  Either String key_update_state
+send_required_key_update_response
+  (MkKeyUpdateState permission no_update_response_owed) =
+    Left "no KeyUpdate response is currently required"
+send_required_key_update_response
+  (MkKeyUpdateState permission update_response_owed) =
+    Right (MkKeyUpdateState permission no_update_response_owed)
+
+public export
+application_data_may_be_sent : key_update_state → Bool
+application_data_may_be_sent
+  (MkKeyUpdateState _ no_update_response_owed) = True
+application_data_may_be_sent
+  (MkKeyUpdateState _ update_response_owed) = False

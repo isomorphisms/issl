@@ -1,0 +1,278 @@
+module AuthAcceptance
+
+import TLS.Extension
+import TLS.PSK
+import TLS.Negotiation
+import TLS.ServerNegotiation
+import TLS.Hello
+import TLS.ConnectionNegotiation
+import TLS.SuiteParameters
+import TLS.AuthMessages
+import System
+
+%default total
+
+check : String → Bool → IO ()
+check name True = putStrLn ("ok   " ++ name)
+check name False = putStrLn ("FAIL " ++ name)
+
+zeros_32 : List Bits8
+zeros_32 =
+  [0, 0, 0, 0, 0, 0, 0, 0,
+   0, 0, 0, 0, 0, 0, 0, 0,
+   0, 0, 0, 0, 0, 0, 0, 0,
+   0, 0, 0, 0, 0, 0, 0, 0]
+
+zeros_48 : List Bits8
+zeros_48 = zeros_32 ++
+  [0, 0, 0, 0, 0, 0, 0, 0,
+   0, 0, 0, 0, 0, 0, 0, 0]
+
+encrypted_extensions_semantics : Bool
+encrypted_extensions_semantics =
+  case parse_encrypted_extensions [0, 0] of
+    Right (MkEncryptedExtensions []) => True
+    _ => False
+
+certificate_request_semantics : Bool
+certificate_request_semantics =
+  case parse_certificate_request
+    [0,
+     0, 8,
+     0, 13, 0, 4, 0, 2, 8, 4] of
+    Left _ => False
+    Right request =>
+      case validate_main_handshake_certificate_request request of
+        Right () => True
+        _ => False
+
+certificate_request_zero_extension_syntax : Bool
+certificate_request_zero_extension_syntax =
+  case parse_certificate_request [0, 0, 0] of
+    Right request =>
+      case validate_main_handshake_certificate_request request of
+        Left _ => True
+        _ => False
+    _ => False
+
+server_certificate_semantics : Bool
+server_certificate_semantics =
+  case parse_certificate_message
+    [0,
+     0, 0, 6,
+     0, 0, 1, 42,
+     0, 0] of
+    Left _ => False
+    Right message =>
+      case validate_server_certificate_message message of
+        Right () => True
+        _ => False
+
+server_empty_certificate_refusal : Bool
+server_empty_certificate_refusal =
+  case parse_certificate_message [0, 0, 0, 0] of
+    Left _ => False
+    Right message =>
+      case validate_server_certificate_message message of
+        Left _ => True
+        _ => False
+
+client_certificate_context_semantics : Bool
+client_certificate_context_semantics =
+  case ( parse_certificate_request
+           [2, 7, 8,
+            0, 8,
+            0, 13, 0, 4, 0, 2, 8, 4]
+       , parse_certificate_message
+           [2, 7, 8,
+            0, 0, 0]
+       ) of
+    (Right request, Right response) =>
+      case validate_client_certificate_response request response of
+        Right () => True
+        _ => False
+    _ => False
+
+certificate_verify_semantics : Bool
+certificate_verify_semantics =
+  case parse_certificate_verify [8, 4, 0, 2, 9, 8] of
+    Right (MkCertificateVerify rsa_pss_rsae_sha256 [9, 8]) => True
+    _ => False
+
+certificate_verify_context_semantics : Bool
+certificate_verify_context_semantics =
+  length
+    (certificate_verify_signed_content
+      server_certificate_verify
+      zeros_32) == 130
+
+finished_semantics : Bool
+finished_semantics =
+  case (parse_finished sha256 zeros_32, parse_finished sha384 zeros_48) of
+    (Right (MkFinishedMessage left), Right (MkFinishedMessage right)) =>
+      length left == 32 && length right == 48
+    _ => False
+
+finished_length_refusal : Bool
+finished_length_refusal =
+  case parse_finished sha384 zeros_32 of
+    Left _ => True
+    _ => False
+
+suite_parameter_semantics : Bool
+suite_parameter_semantics =
+  case ( parameters_for_suite tls_aes_128_gcm_sha256
+       , parameters_for_suite tls_aes_256_gcm_sha384
+       , parameters_for_suite tls_aes_128_ccm_8_sha256
+       ) of
+    ( MkSuiteParameters aes_128_gcm sha256 16 12 16
+      , MkSuiteParameters aes_256_gcm sha384 32 12 16
+      , MkSuiteParameters aes_128_ccm_8 sha256 16 12 8
+      ) => True
+    _ => False
+
+one_psk_extension : tls_extension
+one_psk_extension =
+  MkTlsExtension 41
+    ([0, 7,
+      0, 1, 7,
+      0, 0, 0, 0,
+      0, 33,
+      32] ++ zeros_32)
+
+psk_parser_semantics : Bool
+psk_parser_semantics =
+  case parse_client_pre_shared_key one_psk_extension of
+    Right offered => offered_psk_count offered == 1
+    _ => False
+
+psk_binder_count_refusal : Bool
+psk_binder_count_refusal =
+  let two_identities_one_binder =
+        MkTlsExtension 41
+          ([0, 14,
+            0, 1, 7, 0, 0, 0, 0,
+            0, 1, 8, 0, 0, 0, 0,
+            0, 33,
+            32] ++ zeros_32) in
+    case parse_client_pre_shared_key two_identities_one_binder of
+      Left _ => True
+      _ => False
+
+psk_client : tls13_client_hello
+psk_client =
+  MkTls13ClientHello
+    zeros_32
+    []
+    [MkCipherSuiteCode 4865]
+    [ MkTlsExtension 43 [2, 3, 4]
+    , MkTlsExtension 45 [1, 0]
+    , one_psk_extension
+    ]
+
+psk_server : tls13_server_hello
+psk_server =
+  MkTls13ServerHello
+    negotiated_server_hello
+    zeros_32
+    []
+    (MkCipherSuiteCode 4865)
+    tls_aes_128_gcm_sha256
+    [ MkTlsExtension 43 [3, 4]
+    , MkTlsExtension 41 [0, 0]
+    ]
+
+psk_connection_semantics : Bool
+psk_connection_semantics =
+  case validate_server_hello_against_client psk_client psk_server of
+    Right () => True
+    _ => False
+
+psk_selection_refusal : Bool
+psk_selection_refusal =
+  let bad_server =
+        MkTls13ServerHello
+          negotiated_server_hello
+          zeros_32
+          []
+          (MkCipherSuiteCode 4865)
+          tls_aes_128_gcm_sha256
+          [ MkTlsExtension 43 [3, 4]
+          , MkTlsExtension 41 [0, 1]
+          ] in
+    case validate_server_hello_against_client psk_client bad_server of
+      Left _ => True
+      _ => False
+
+psk_mode_refusal : Bool
+psk_mode_refusal =
+  let dhe_only_client =
+        MkTls13ClientHello
+          zeros_32
+          []
+          [MkCipherSuiteCode 4865]
+          [ MkTlsExtension 43 [2, 3, 4]
+          , MkTlsExtension 45 [1, 1]
+          , one_psk_extension
+          ] in
+    case validate_server_hello_against_client dhe_only_client psk_server of
+      Left _ => True
+      _ => False
+
+key_share_order_refusal : Bool
+key_share_order_refusal =
+  let client =
+        MkTls13ClientHello
+          zeros_32
+          []
+          [MkCipherSuiteCode 4865]
+          [ MkTlsExtension 10 [0, 4, 0, 23, 0, 29]
+          , MkTlsExtension 51
+              [0, 10,
+               0, 29, 0, 1, 1,
+               0, 23, 0, 1, 2]
+          ] in
+    case validate_client_key_share_order client of
+      Left _ => True
+      _ => False
+
+all_pass : Bool
+all_pass =
+  encrypted_extensions_semantics &&
+  certificate_request_semantics &&
+  certificate_request_zero_extension_syntax &&
+  server_certificate_semantics &&
+  server_empty_certificate_refusal &&
+  client_certificate_context_semantics &&
+  certificate_verify_semantics &&
+  certificate_verify_context_semantics &&
+  finished_semantics &&
+  finished_length_refusal &&
+  suite_parameter_semantics &&
+  psk_parser_semantics &&
+  psk_binder_count_refusal &&
+  psk_connection_semantics &&
+  psk_selection_refusal &&
+  psk_mode_refusal &&
+  key_share_order_refusal
+
+main : IO ()
+main = do
+  check "EncryptedExtensions framing" encrypted_extensions_semantics
+  check "main-handshake CertificateRequest" certificate_request_semantics
+  check "CertificateRequest zero-extension syntax" certificate_request_zero_extension_syntax
+  check "server Certificate framing" server_certificate_semantics
+  check "empty server Certificate refusal" server_empty_certificate_refusal
+  check "client Certificate request-context echo" client_certificate_context_semantics
+  check "CertificateVerify framing" certificate_verify_semantics
+  check "CertificateVerify signed-content domain" certificate_verify_context_semantics
+  check "Finished hash-sized framing" finished_semantics
+  check "Finished wrong hash length refusal" finished_length_refusal
+  check "TLS 1.3 cipher-suite parameters" suite_parameter_semantics
+  check "PSK identity and binder framing" psk_parser_semantics
+  check "PSK binder-count refusal" psk_binder_count_refusal
+  check "PSK connection negotiation" psk_connection_semantics
+  check "PSK selected-identity refusal" psk_selection_refusal
+  check "PSK mode mismatch refusal" psk_mode_refusal
+  check "client key-share ordering refusal" key_share_order_refusal
+  if all_pass then pure () else exitFailure

@@ -1,0 +1,132 @@
+module TLS.PSK
+
+import TLS.Extension
+
+%default total
+
+wire_u16 : Bits8 → Bits8 → ℕ
+wire_u16 high low = cast high * 256 + cast low
+
+take_bytes_exact : ℕ → List Bits8 → Maybe (List Bits8, List Bits8)
+take_bytes_exact 0 bytes = Just ([], bytes)
+take_bytes_exact (S remaining) [] = Nothing
+take_bytes_exact (S remaining) (byte :: rest) =
+  case take_bytes_exact remaining rest of
+    Nothing => Nothing
+    Just (taken, trailing) => Just (byte :: taken, trailing)
+
+public export
+record obfuscated_ticket_age where
+  constructor MkObfuscatedTicketAge
+  ticket_age_byte_3 : Bits8
+  ticket_age_byte_2 : Bits8
+  ticket_age_byte_1 : Bits8
+  ticket_age_byte_0 : Bits8
+
+public export
+record psk_identity where
+  constructor MkPskIdentity
+  psk_identity_bytes : List Bits8
+  psk_obfuscated_ticket_age : obfuscated_ticket_age
+
+parse_psk_identities_with_fuel :
+  ℕ →
+  List Bits8 →
+  Either String (List psk_identity)
+parse_psk_identities_with_fuel _ [] = Right []
+parse_psk_identities_with_fuel 0 _ =
+  Left "PSK identity parser exhausted its input bound"
+parse_psk_identities_with_fuel
+  (S fuel)
+  (length_high :: length_low :: rest) =
+    let identity_length = wire_u16 length_high length_low in
+      if identity_length == 0
+        then Left "PSK identity must not be empty"
+        else case take_bytes_exact identity_length rest of
+          Nothing => Left "PSK identity is truncated"
+          Just (identity, age_3 :: age_2 :: age_1 :: age_0 :: trailing) =>
+            case parse_psk_identities_with_fuel fuel trailing of
+              Left problem => Left problem
+              Right identities =>
+                Right
+                  (MkPskIdentity
+                    identity
+                    (MkObfuscatedTicketAge age_3 age_2 age_1 age_0) ::
+                   identities)
+          Just (_, _) => Left "PSK identity is missing its four-byte ticket age"
+parse_psk_identities_with_fuel (S _) _ =
+  Left "PSK identity is missing its two-byte length"
+
+parse_psk_identities : List Bits8 → Either String (List psk_identity)
+parse_psk_identities bytes =
+  parse_psk_identities_with_fuel (length bytes) bytes
+
+public export
+record psk_binder where
+  constructor MkPskBinder
+  psk_binder_bytes : List Bits8
+
+parse_psk_binders_with_fuel :
+  ℕ →
+  List Bits8 →
+  Either String (List psk_binder)
+parse_psk_binders_with_fuel _ [] = Right []
+parse_psk_binders_with_fuel 0 _ =
+  Left "PSK binder parser exhausted its input bound"
+parse_psk_binders_with_fuel (S fuel) (declared_length :: rest) =
+  let binder_length : ℕ = cast declared_length in
+    if binder_length < 32
+      then Left "PSK binder must contain at least 32 bytes"
+      else case take_bytes_exact binder_length rest of
+        Nothing => Left "PSK binder is truncated"
+        Just (binder, trailing) =>
+          case parse_psk_binders_with_fuel fuel trailing of
+            Left problem => Left problem
+            Right binders => Right (MkPskBinder binder :: binders)
+
+parse_psk_binders : List Bits8 → Either String (List psk_binder)
+parse_psk_binders bytes =
+  parse_psk_binders_with_fuel (length bytes) bytes
+
+public export
+record offered_psks where
+  constructor MkOfferedPsks
+  offered_psk_identities : List psk_identity
+  offered_psk_binders : List psk_binder
+
+public export
+offered_psk_count : offered_psks → ℕ
+offered_psk_count (MkOfferedPsks identities _) = length identities
+
+public export
+parse_client_pre_shared_key : tls_extension → Either String offered_psks
+parse_client_pre_shared_key extension =
+  if extension.extension_type_code /= pre_shared_key_code
+    then Left "expected pre_shared_key extension"
+    else case extension.extension_data of
+      identities_high :: identities_low :: rest =>
+        let identities_length = wire_u16 identities_high identities_low in
+          if identities_length < 7
+            then Left "pre_shared_key identities vector is too short"
+            else case take_bytes_exact identities_length rest of
+              Nothing => Left "pre_shared_key identities vector is truncated"
+              Just (identity_bytes, binders_high :: binders_low :: binder_bytes) =>
+                let binders_length = wire_u16 binders_high binders_low in
+                  if binders_length < 33
+                    then Left "pre_shared_key binders vector is too short"
+                    else if binders_length /= length binder_bytes
+                      then Left "pre_shared_key binders length does not match its payload"
+                      else case
+                        ( parse_psk_identities identity_bytes
+                        , parse_psk_binders binder_bytes
+                        ) of
+                          (Left problem, _) => Left problem
+                          (_, Left problem) => Left problem
+                          (Right identities, Right binders) =>
+                            if length identities == 0
+                              then Left "pre_shared_key must offer at least one identity"
+                              else if length identities /= length binders
+                                then Left "pre_shared_key must contain one binder per identity"
+                                else Right (MkOfferedPsks identities binders)
+              Just (_, _) => Left "pre_shared_key is missing its binders vector length"
+      _ => Left "pre_shared_key is missing its identities vector length"

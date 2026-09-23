@@ -1,0 +1,353 @@
+module TLS.Negotiation
+
+import TLS.Extension
+
+%default total
+
+wire_u16 : Bits8 → Bits8 → Bits16
+wire_u16 high low = cast high * 256 + cast low
+
+take_bytes_exact : ℕ → List Bits8 → Maybe (List Bits8, List Bits8)
+take_bytes_exact 0 bytes = Just ([], bytes)
+take_bytes_exact (S remaining) [] = Nothing
+take_bytes_exact (S remaining) (byte :: rest) =
+  case take_bytes_exact remaining rest of
+    Nothing => Nothing
+    Just (taken, trailing) => Just (byte :: taken, trailing)
+
+public export
+choice named_group one_of
+  secp256r1
+  secp384r1
+  secp521r1
+  x25519
+  x448
+  ffdhe2048
+  ffdhe3072
+  ffdhe4096
+  ffdhe6144
+  ffdhe8192
+  unrecognized_named_group Bits16
+
+public export
+named_group_from_code : Bits16 → named_group
+named_group_from_code 23 = secp256r1
+named_group_from_code 24 = secp384r1
+named_group_from_code 25 = secp521r1
+named_group_from_code 29 = x25519
+named_group_from_code 30 = x448
+named_group_from_code 256 = ffdhe2048
+named_group_from_code 257 = ffdhe3072
+named_group_from_code 258 = ffdhe4096
+named_group_from_code 259 = ffdhe6144
+named_group_from_code 260 = ffdhe8192
+named_group_from_code code = unrecognized_named_group code
+
+public export
+named_group_code : named_group → Bits16
+named_group_code secp256r1 = 23
+named_group_code secp384r1 = 24
+named_group_code secp521r1 = 25
+named_group_code x25519 = 29
+named_group_code x448 = 30
+named_group_code ffdhe2048 = 256
+named_group_code ffdhe3072 = 257
+named_group_code ffdhe4096 = 258
+named_group_code ffdhe6144 = 259
+named_group_code ffdhe8192 = 260
+named_group_code (unrecognized_named_group code) = code
+
+parse_named_groups : List Bits8 → Either String (List named_group)
+parse_named_groups [] = Right []
+parse_named_groups (high :: low :: rest) =
+  case parse_named_groups rest of
+    Left problem => Left problem
+    Right groups => Right (named_group_from_code (wire_u16 high low) :: groups)
+parse_named_groups _ = Left "supported_groups contains a partial group code"
+
+group_present : Bits16 → List named_group → Bool
+group_present wanted [] = False
+group_present wanted (group :: rest) =
+  named_group_code group == wanted || group_present wanted rest
+
+has_duplicate_groups : List named_group → Bool
+has_duplicate_groups [] = False
+has_duplicate_groups (group :: rest) =
+  group_present (named_group_code group) rest || has_duplicate_groups rest
+
+public export
+parse_supported_groups : tls_extension → Either String (List named_group)
+parse_supported_groups extension =
+  if extension.extension_type_code /= supported_groups_code
+    then Left "expected supported_groups extension"
+    else case extension.extension_data of
+      length_high :: length_low :: group_bytes =>
+        let vector_length : ℕ = cast (wire_u16 length_high length_low) in
+          if vector_length < 2
+            then Left "supported_groups must contain at least one group"
+            else if vector_length /= length group_bytes
+              then Left "supported_groups length does not match its payload"
+              else case parse_named_groups group_bytes of
+                Left problem => Left problem
+                Right groups =>
+                  if has_duplicate_groups groups
+                    then Left "supported_groups contains a duplicate group"
+                    else Right groups
+      _ => Left "supported_groups is missing its vector length"
+
+public export
+choice signature_scheme one_of
+  rsa_pkcs1_sha256
+  rsa_pkcs1_sha384
+  rsa_pkcs1_sha512
+  ecdsa_secp256r1_sha256
+  ecdsa_secp384r1_sha384
+  ecdsa_secp521r1_sha512
+  rsa_pss_rsae_sha256
+  rsa_pss_rsae_sha384
+  rsa_pss_rsae_sha512
+  ed25519
+  ed448
+  rsa_pss_pss_sha256
+  rsa_pss_pss_sha384
+  rsa_pss_pss_sha512
+  rsa_pkcs1_sha1
+  ecdsa_sha1
+  unrecognized_signature_scheme Bits16
+
+public export
+signature_scheme_from_code : Bits16 → signature_scheme
+signature_scheme_from_code 1025 = rsa_pkcs1_sha256
+signature_scheme_from_code 1281 = rsa_pkcs1_sha384
+signature_scheme_from_code 1537 = rsa_pkcs1_sha512
+signature_scheme_from_code 1027 = ecdsa_secp256r1_sha256
+signature_scheme_from_code 1283 = ecdsa_secp384r1_sha384
+signature_scheme_from_code 1539 = ecdsa_secp521r1_sha512
+signature_scheme_from_code 2052 = rsa_pss_rsae_sha256
+signature_scheme_from_code 2053 = rsa_pss_rsae_sha384
+signature_scheme_from_code 2054 = rsa_pss_rsae_sha512
+signature_scheme_from_code 2055 = ed25519
+signature_scheme_from_code 2056 = ed448
+signature_scheme_from_code 2057 = rsa_pss_pss_sha256
+signature_scheme_from_code 2058 = rsa_pss_pss_sha384
+signature_scheme_from_code 2059 = rsa_pss_pss_sha512
+signature_scheme_from_code 513 = rsa_pkcs1_sha1
+signature_scheme_from_code 515 = ecdsa_sha1
+signature_scheme_from_code code = unrecognized_signature_scheme code
+
+parse_signature_schemes : List Bits8 → Either String (List signature_scheme)
+parse_signature_schemes [] = Right []
+parse_signature_schemes (high :: low :: rest) =
+  case parse_signature_schemes rest of
+    Left problem => Left problem
+    Right schemes =>
+      Right (signature_scheme_from_code (wire_u16 high low) :: schemes)
+parse_signature_schemes _ =
+  Left "signature_algorithms contains a partial signature scheme"
+
+public export
+parse_signature_algorithms : tls_extension → Either String (List signature_scheme)
+parse_signature_algorithms extension =
+  if extension.extension_type_code /= signature_algorithms_code &&
+     extension.extension_type_code /= signature_algorithms_cert_code
+    then Left "expected signature_algorithms extension"
+    else case extension.extension_data of
+      length_high :: length_low :: scheme_bytes =>
+        let vector_length : ℕ = cast (wire_u16 length_high length_low) in
+          if vector_length < 2
+            then Left "signature_algorithms must contain at least one scheme"
+            else if vector_length > 65534
+              then Left "signature_algorithms vector is too large"
+              else if vector_length /= length scheme_bytes
+                then Left "signature_algorithms length does not match its payload"
+                else parse_signature_schemes scheme_bytes
+      _ => Left "signature_algorithms is missing its vector length"
+
+public export
+record key_share_entry where
+  constructor MkKeyShareEntry
+  key_share_group : named_group
+  key_exchange_bytes : List Bits8
+
+key_share_group_present : Bits16 → List key_share_entry → Bool
+key_share_group_present wanted [] = False
+key_share_group_present wanted (share :: rest) =
+  named_group_code share.key_share_group == wanted ||
+  key_share_group_present wanted rest
+
+parse_key_share_entries_with_fuel :
+  ℕ →
+  List Bits8 →
+  Either String (List key_share_entry)
+parse_key_share_entries_with_fuel _ [] = Right []
+parse_key_share_entries_with_fuel 0 _ =
+  Left "key_share parser exhausted its input bound"
+parse_key_share_entries_with_fuel
+  (S fuel)
+  (group_high :: group_low :: length_high :: length_low :: rest) =
+    let exchange_length : ℕ = cast (wire_u16 length_high length_low)
+        group = named_group_from_code (wire_u16 group_high group_low) in
+      if exchange_length == 0
+        then Left "key_share key_exchange must not be empty"
+        else case take_bytes_exact exchange_length rest of
+          Nothing => Left "key_share key_exchange is truncated"
+          Just (exchange, trailing) =>
+            case parse_key_share_entries_with_fuel fuel trailing of
+              Left problem => Left problem
+              Right shares =>
+                if key_share_group_present (named_group_code group) shares
+                  then Left "key_share contains a duplicate group"
+                  else Right (MkKeyShareEntry group exchange :: shares)
+parse_key_share_entries_with_fuel (S _) _ =
+  Left "key_share entry header is truncated"
+
+parse_key_share_entries : List Bits8 → Either String (List key_share_entry)
+parse_key_share_entries bytes =
+  parse_key_share_entries_with_fuel (length bytes) bytes
+
+public export
+parse_client_key_share : tls_extension → Either String (List key_share_entry)
+parse_client_key_share extension =
+  if extension.extension_type_code /= key_share_code
+    then Left "expected key_share extension"
+    else case extension.extension_data of
+      length_high :: length_low :: share_bytes =>
+        let vector_length : ℕ = cast (wire_u16 length_high length_low) in
+          if vector_length /= length share_bytes
+            then Left "client key_share length does not match its payload"
+            else parse_key_share_entries share_bytes
+      _ => Left "client key_share is missing its vector length"
+
+public export
+parse_server_key_share : tls_extension → Either String key_share_entry
+parse_server_key_share extension =
+  if extension.extension_type_code /= key_share_code
+    then Left "expected key_share extension"
+    else case parse_key_share_entries extension.extension_data of
+      Left problem => Left problem
+      Right [share] => Right share
+      Right _ => Left "ServerHello key_share must contain exactly one entry"
+
+public export
+parse_hello_retry_group : tls_extension → Either String named_group
+parse_hello_retry_group extension =
+  if extension.extension_type_code /= key_share_code
+    then Left "expected key_share extension"
+    else case extension.extension_data of
+      [high, low] => Right (named_group_from_code (wire_u16 high low))
+      _ => Left "HelloRetryRequest key_share must contain one selected group"
+
+public export
+choice psk_key_exchange_mode one_of
+  psk_ke
+  psk_dhe_ke
+  unrecognized_psk_mode Bits8
+
+psk_mode_from_wire : Bits8 → psk_key_exchange_mode
+psk_mode_from_wire 0 = psk_ke
+psk_mode_from_wire 1 = psk_dhe_ke
+psk_mode_from_wire value = unrecognized_psk_mode value
+
+parse_psk_modes : List Bits8 → List psk_key_exchange_mode
+parse_psk_modes [] = []
+parse_psk_modes (mode :: rest) = psk_mode_from_wire mode :: parse_psk_modes rest
+
+public export
+parse_psk_key_exchange_modes :
+  tls_extension →
+  Either String (List psk_key_exchange_mode)
+parse_psk_key_exchange_modes extension =
+  if extension.extension_type_code /= psk_key_exchange_modes_code
+    then Left "expected psk_key_exchange_modes extension"
+    else case extension.extension_data of
+      [] => Left "psk_key_exchange_modes is missing its vector length"
+      declared_length :: mode_bytes =>
+        if declared_length == 0
+          then Left "psk_key_exchange_modes must contain at least one mode"
+          else if cast declared_length /= length mode_bytes
+            then Left "psk_key_exchange_modes length does not match its payload"
+            else Right (parse_psk_modes mode_bytes)
+
+extension_present : Bits16 → List tls_extension → Bool
+extension_present wanted [] = False
+extension_present wanted (extension :: rest) =
+  extension.extension_type_code == wanted || extension_present wanted rest
+
+last_extension_is : Bits16 → List tls_extension → Bool
+last_extension_is wanted [] = False
+last_extension_is wanted [extension] = extension.extension_type_code == wanted
+last_extension_is wanted (_ :: rest) = last_extension_is wanted rest
+
+validate_optional_signature : List tls_extension → Either String ()
+validate_optional_signature extensions =
+  case find_single_extension signature_algorithms_code extensions of
+    Left problem => Left problem
+    Right Nothing => Right ()
+    Right (Just extension) =>
+      case parse_signature_algorithms extension of
+        Left problem => Left problem
+        Right _ => Right ()
+
+validate_optional_groups : List tls_extension → Either String ()
+validate_optional_groups extensions =
+  case find_single_extension supported_groups_code extensions of
+    Left problem => Left problem
+    Right Nothing => Right ()
+    Right (Just extension) =>
+      case parse_supported_groups extension of
+        Left problem => Left problem
+        Right _ => Right ()
+
+validate_optional_key_share : List tls_extension → Either String ()
+validate_optional_key_share extensions =
+  case find_single_extension key_share_code extensions of
+    Left problem => Left problem
+    Right Nothing => Right ()
+    Right (Just extension) =>
+      case parse_client_key_share extension of
+        Left problem => Left problem
+        Right _ => Right ()
+
+validate_optional_psk_modes : List tls_extension → Either String ()
+validate_optional_psk_modes extensions =
+  case find_single_extension psk_key_exchange_modes_code extensions of
+    Left problem => Left problem
+    Right Nothing => Right ()
+    Right (Just extension) =>
+      case parse_psk_key_exchange_modes extension of
+        Left problem => Left problem
+        Right _ => Right ()
+
+validate_negotiation_payloads : List tls_extension → Either String ()
+validate_negotiation_payloads extensions =
+  case validate_optional_signature extensions of
+    Left problem => Left problem
+    Right () =>
+      case validate_optional_groups extensions of
+        Left problem => Left problem
+        Right () =>
+          case validate_optional_key_share extensions of
+            Left problem => Left problem
+            Right () => validate_optional_psk_modes extensions
+
+public export
+validate_tls13_client_negotiation_extensions :
+  List tls_extension →
+  Either String ()
+validate_tls13_client_negotiation_extensions extensions =
+  let has_psk = extension_present pre_shared_key_code extensions
+      has_psk_modes = extension_present psk_key_exchange_modes_code extensions
+      has_signatures = extension_present signature_algorithms_code extensions
+      has_groups = extension_present supported_groups_code extensions
+      has_key_share = extension_present key_share_code extensions in
+    if has_psk && not has_psk_modes
+      then Left "pre_shared_key requires psk_key_exchange_modes"
+      else if has_psk && not (last_extension_is pre_shared_key_code extensions)
+        then Left "pre_shared_key must be the final ClientHello extension"
+        else if has_groups /= has_key_share
+          then Left "supported_groups and key_share must appear together"
+          else if not has_psk && not has_signatures
+            then Left "non-PSK TLS 1.3 ClientHello requires signature_algorithms"
+            else if not has_psk && not has_groups
+              then Left "non-PSK TLS 1.3 ClientHello requires supported_groups and key_share"
+              else validate_negotiation_payloads extensions

@@ -1,0 +1,82 @@
+module TLS.ClientState
+
+%default total
+
+public export
+choice client_handshake_state one_of
+  awaiting_server_hello_initial
+  awaiting_server_hello_after_retry
+  awaiting_encrypted_extensions
+  awaiting_server_auth_or_finished
+  awaiting_server_certificate_after_request
+  awaiting_server_certificate_verify
+  awaiting_server_certificate_verify_after_request
+  awaiting_server_finished
+  awaiting_server_finished_after_request
+  ready_for_client_certificate
+  ready_for_client_certificate_verify_or_finished
+  ready_for_client_finished
+  handshake_established
+
+public export
+choice client_handshake_event one_of
+  received_server_hello
+  received_hello_retry_request
+  received_encrypted_extensions
+  received_certificate_request
+  received_server_certificate
+  received_server_certificate_verify
+  received_server_finished
+  sent_client_certificate
+  sent_client_certificate_verify
+  sent_client_finished
+
+public export
+initial_client_handshake_state : client_handshake_state
+initial_client_handshake_state = awaiting_server_hello_initial
+
+public export
+advance_client_handshake :
+  client_handshake_state →
+  client_handshake_event →
+  Either String client_handshake_state
+advance_client_handshake awaiting_server_hello_initial received_hello_retry_request =
+  Right awaiting_server_hello_after_retry
+advance_client_handshake awaiting_server_hello_after_retry received_hello_retry_request =
+  Left "a TLS 1.3 client must reject a second HelloRetryRequest"
+advance_client_handshake awaiting_server_hello_initial received_server_hello =
+  Right awaiting_encrypted_extensions
+advance_client_handshake awaiting_server_hello_after_retry received_server_hello =
+  Right awaiting_encrypted_extensions
+advance_client_handshake awaiting_encrypted_extensions received_encrypted_extensions =
+  Right awaiting_server_auth_or_finished
+advance_client_handshake awaiting_server_auth_or_finished received_certificate_request =
+  Right awaiting_server_certificate_after_request
+advance_client_handshake awaiting_server_auth_or_finished received_server_certificate =
+  Right awaiting_server_certificate_verify
+advance_client_handshake awaiting_server_certificate_after_request received_server_certificate =
+  Right awaiting_server_certificate_verify_after_request
+advance_client_handshake awaiting_server_certificate_verify received_server_certificate_verify =
+  Right awaiting_server_finished
+advance_client_handshake awaiting_server_certificate_verify_after_request received_server_certificate_verify =
+  Right awaiting_server_finished_after_request
+advance_client_handshake awaiting_server_auth_or_finished received_server_finished =
+  Right ready_for_client_finished
+advance_client_handshake awaiting_server_finished received_server_finished =
+  Right ready_for_client_finished
+advance_client_handshake awaiting_server_finished_after_request received_server_finished =
+  Right ready_for_client_certificate
+advance_client_handshake ready_for_client_certificate sent_client_certificate =
+  Right ready_for_client_certificate_verify_or_finished
+advance_client_handshake
+  ready_for_client_certificate_verify_or_finished
+  sent_client_certificate_verify =
+    Right ready_for_client_finished
+advance_client_handshake
+  ready_for_client_certificate_verify_or_finished
+  sent_client_finished =
+    Right handshake_established
+advance_client_handshake ready_for_client_finished sent_client_finished =
+  Right handshake_established
+advance_client_handshake state event =
+  Left "TLS 1.3 handshake message is not valid in the current client state"

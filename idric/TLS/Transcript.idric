@@ -1,0 +1,75 @@
+module TLS.Transcript
+
+import TLS.Handshake
+import TLS.Hello
+
+%default total
+
+public export
+choice transcript_hash_algorithm one_of
+  transcript_sha256
+  transcript_sha384
+
+public export
+transcript_hash_length : transcript_hash_algorithm → ℕ
+transcript_hash_length transcript_sha256 = 32
+transcript_hash_length transcript_sha384 = 48
+
+public export
+record transcript_hash where
+  constructor MkTranscriptHash
+  transcript_algorithm : transcript_hash_algorithm
+  transcript_digest : List Bits8
+
+public export
+make_transcript_hash :
+  transcript_hash_algorithm →
+  List Bits8 →
+  Either String transcript_hash
+make_transcript_hash algorithm digest =
+  if length digest == transcript_hash_length algorithm
+    then Right (MkTranscriptHash algorithm digest)
+    else Left "TLS transcript hash has the wrong length for its algorithm"
+
+public export
+record handshake_transcript where
+  constructor MkHandshakeTranscript
+  transcript_bytes : List Bits8
+
+public export
+empty_handshake_transcript : handshake_transcript
+empty_handshake_transcript = MkHandshakeTranscript []
+
+public export
+append_handshake_message :
+  handshake_transcript →
+  parsed_handshake_message →
+  handshake_transcript
+append_handshake_message
+  (MkHandshakeTranscript current)
+  (MkParsedHandshakeMessage _ message_bytes _) =
+    MkHandshakeTranscript (current ++ message_bytes)
+
+synthetic_message_hash_bytes : transcript_hash → List Bits8
+synthetic_message_hash_bytes (MkTranscriptHash transcript_sha256 digest) =
+  [254, 0, 0, 32] ++ digest
+synthetic_message_hash_bytes (MkTranscriptHash transcript_sha384 digest) =
+  [254, 0, 0, 48] ++ digest
+
+public export
+hello_retry_transcript :
+  transcript_hash →
+  parsed_handshake_message →
+  Either String handshake_transcript
+hello_retry_transcript client_hello_hash retry =
+  case retry.parsed_message of
+    MkHandshakeMessage server_hello body =>
+      case parse_tls13_server_hello body of
+        Right (MkTls13ServerHello hello_retry_request _ _ _ _ _) =>
+          Right
+            (MkHandshakeTranscript
+              (synthetic_message_hash_bytes client_hello_hash ++
+               retry.transcript_message_bytes))
+        Right _ => Left "server_hello message is not a HelloRetryRequest"
+        Left problem => Left problem
+    _ => Left "HelloRetryRequest must use the server_hello handshake type"

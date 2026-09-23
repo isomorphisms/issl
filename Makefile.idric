@@ -1,0 +1,25 @@
+IDRIC ?= idris2
+IDRIC_SOURCES := $(wildcard idric/*.idric idric/TLS/*.idric)
+
+.PHONY: idric-build idric-test idric-vocabulary idric-clean
+
+idric-build: idric-vocabulary
+	$(IDRIC) --build issl-idric.ipkg
+	$(IDRIC) --build issl-idric-auth.ipkg
+
+idric-test: idric-build
+	./build/exec/issl-idric-tests
+	./build/exec/issl-idric-auth-tests
+
+idric-vocabulary:
+	@if grep -nE '(^|[^[:alnum:]_])Nat([^[:alnum:]_]|$$)' $(IDRIC_SOURCES); then \
+		echo 'error: active Idriç source must use ℕ for natural numbers' >&2; \
+		exit 1; \
+	fi
+	@if grep -nE '(^|[^[:alnum:]_])(Int|Integer)([^[:alnum:]_]|$$)' $(IDRIC_SOURCES); then \
+		echo 'error: TLS source must not collapse protocol values into raw signed integers' >&2; \
+		exit 1; \
+	fi
+
+idric-clean:
+	rm -rf build

@@ -22,12 +22,12 @@ take_bytes_exact (S remaining) (byte :: rest) =
     Just (taken, trailing) => Just (byte :: taken, trailing)
 
 public export
-record encrypted_extensions where
+record EncryptedExtensions where
   constructor MkEncryptedExtensions
-  encrypted_extension_values : List tls_extension
+  encrypted_extension_values : List TlsExtension
 
 public export
-parse_encrypted_extensions : List Bits8 → Either String encrypted_extensions
+parse_encrypted_extensions : List Bits8 → Either String EncryptedExtensions
 parse_encrypted_extensions bytes =
   case parse_extension_vector bytes of
     Left problem => Left problem
@@ -37,13 +37,13 @@ parse_encrypted_extensions bytes =
       Left "bytes remain after EncryptedExtensions"
 
 public export
-record certificate_request where
+record CertificateRequest where
   constructor MkCertificateRequest
   certificate_request_context : List Bits8
-  certificate_request_extensions : List tls_extension
+  certificate_request_extensions : List TlsExtension
 
 public export
-parse_certificate_request : List Bits8 → Either String certificate_request
+parse_certificate_request : List Bits8 → Either String CertificateRequest
 parse_certificate_request [] =
   Left "CertificateRequest is missing certificate_request_context length"
 parse_certificate_request (context_length :: rest) =
@@ -60,7 +60,7 @@ parse_certificate_request (context_length :: rest) =
 
 public export
 validate_main_handshake_certificate_request :
-  certificate_request →
+  CertificateRequest →
   Either String ()
 validate_main_handshake_certificate_request request =
   if request.certificate_request_context /= []
@@ -74,15 +74,15 @@ validate_main_handshake_certificate_request request =
           Right _ => Right ()
 
 public export
-record certificate_entry where
+record CertificateEntry where
   constructor MkCertificateEntry
   certificate_bytes : List Bits8
-  certificate_extensions : List tls_extension
+  certificate_extensions : List TlsExtension
 
 parse_certificate_entries_with_fuel :
   ℕ →
   List Bits8 →
-  Either String (List certificate_entry)
+  Either String (List CertificateEntry)
 parse_certificate_entries_with_fuel _ [] = Right []
 parse_certificate_entries_with_fuel 0 _ =
   Left "Certificate entry parser exhausted its input bound"
@@ -105,18 +105,18 @@ parse_certificate_entries_with_fuel
 parse_certificate_entries_with_fuel (S _) _ =
   Left "CertificateEntry is missing its three-byte certificate length"
 
-parse_certificate_entries : List Bits8 → Either String (List certificate_entry)
+parse_certificate_entries : List Bits8 → Either String (List CertificateEntry)
 parse_certificate_entries bytes =
   parse_certificate_entries_with_fuel (length bytes) bytes
 
 public export
-record certificate_message where
+record CertificateMessage where
   constructor MkCertificateMessage
   certificate_message_context : List Bits8
-  certificate_entries : List certificate_entry
+  certificate_entries : List CertificateEntry
 
 public export
-parse_certificate_message : List Bits8 → Either String certificate_message
+parse_certificate_message : List Bits8 → Either String CertificateMessage
 parse_certificate_message [] = Left "Certificate is missing certificate_request_context length"
 parse_certificate_message (context_length :: rest) =
   let context_length_number : ℕ = cast context_length in
@@ -134,7 +134,7 @@ parse_certificate_message (context_length :: rest) =
           _ => Left "Certificate is missing certificate_list length"
 
 public export
-validate_server_certificate_message : certificate_message → Either String ()
+validate_server_certificate_message : CertificateMessage → Either String ()
 validate_server_certificate_message message =
   if message.certificate_message_context /= []
     then Left "server Certificate context must be empty"
@@ -144,8 +144,8 @@ validate_server_certificate_message message =
 
 public export
 validate_client_certificate_response :
-  certificate_request →
-  certificate_message →
+  CertificateRequest →
+  CertificateMessage →
   Either String ()
 validate_client_certificate_response request message =
   if request.certificate_request_context == message.certificate_message_context
@@ -153,13 +153,13 @@ validate_client_certificate_response request message =
     else Left "client Certificate context does not match CertificateRequest"
 
 public export
-record certificate_verify where
+record CertificateVerify where
   constructor MkCertificateVerify
   certificate_verify_algorithm : signature_scheme
   certificate_verify_signature : List Bits8
 
 public export
-parse_certificate_verify : List Bits8 → Either String certificate_verify
+parse_certificate_verify : List Bits8 → Either String CertificateVerify
 parse_certificate_verify
   (algorithm_high :: algorithm_low :: length_high :: length_low :: rest) =
     let signature_length = wire_u16 length_high length_low in
@@ -211,14 +211,14 @@ certificate_verify_signed_content :
   certificate_verify_sender →
   List Bits8 →
   List Bits8
-certificate_verify_signed_content sender transcript_hash =
+certificate_verify_signed_content sender TranscriptHash =
   spaces_64 ++
   certificate_verify_context_bytes sender ++
   [0] ++
-  transcript_hash
+  TranscriptHash
 
 public export
-record finished_message where
+record FinishedMessage where
   constructor MkFinishedMessage
   finished_verify_data : List Bits8
 
@@ -226,7 +226,7 @@ public export
 parse_finished :
   tls13_hash_algorithm →
   List Bits8 →
-  Either String finished_message
+  Either String FinishedMessage
 parse_finished algorithm bytes =
   if length bytes == hash_output_length algorithm
     then Right (MkFinishedMessage bytes)

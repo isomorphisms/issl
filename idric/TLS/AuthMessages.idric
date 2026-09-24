@@ -211,11 +211,11 @@ certificate_verify_signed_content :
   certificate_verify_sender →
   List Bits8 →
   List Bits8
-certificate_verify_signed_content sender TranscriptHash =
+certificate_verify_signed_content sender transcript_hash =
   spaces_64 ++
   certificate_verify_context_bytes sender ++
   [0] ++
-  TranscriptHash
+  transcript_hash
 
 public export
 record FinishedMessage where

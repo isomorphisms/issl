@@ -30,7 +30,7 @@ choice tls_alert_description one_of
   access_denied
   decode_error
   decrypt_error
-  ProtocolVersion
+  protocol_version
   insufficient_security
   internal_error
   inappropriate_fallback
@@ -62,7 +62,7 @@ alert_description_from_wire 48 = unknown_ca
 alert_description_from_wire 49 = access_denied
 alert_description_from_wire 50 = decode_error
 alert_description_from_wire 51 = decrypt_error
-alert_description_from_wire 70 = ProtocolVersion
+alert_description_from_wire 70 = protocol_version
 alert_description_from_wire 71 = insufficient_security
 alert_description_from_wire 80 = internal_error
 alert_description_from_wire 86 = inappropriate_fallback

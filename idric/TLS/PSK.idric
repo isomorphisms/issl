@@ -16,7 +16,7 @@ take_bytes_exact (S remaining) (byte :: rest) =
     Just (taken, trailing) => Just (byte :: taken, trailing)
 
 public export
-record obfuscated_ticket_age where
+record ObfuscatedTicketAge where
   constructor MkObfuscatedTicketAge
   ticket_age_byte_3 : Bits8
   ticket_age_byte_2 : Bits8
@@ -24,15 +24,15 @@ record obfuscated_ticket_age where
   ticket_age_byte_0 : Bits8
 
 public export
-record psk_identity where
+record PskIdentity where
   constructor MkPskIdentity
   psk_identity_bytes : List Bits8
-  psk_obfuscated_ticket_age : obfuscated_ticket_age
+  psk_obfuscated_ticket_age : ObfuscatedTicketAge
 
 parse_psk_identities_with_fuel :
   ℕ →
   List Bits8 →
-  Either String (List psk_identity)
+  Either String (List PskIdentity)
 parse_psk_identities_with_fuel _ [] = Right []
 parse_psk_identities_with_fuel 0 _ =
   Left "PSK identity parser exhausted its input bound"
@@ -57,19 +57,19 @@ parse_psk_identities_with_fuel
 parse_psk_identities_with_fuel (S _) _ =
   Left "PSK identity is missing its two-byte length"
 
-parse_psk_identities : List Bits8 → Either String (List psk_identity)
+parse_psk_identities : List Bits8 → Either String (List PskIdentity)
 parse_psk_identities bytes =
   parse_psk_identities_with_fuel (length bytes) bytes
 
 public export
-record psk_binder where
+record PskBinder where
   constructor MkPskBinder
   psk_binder_bytes : List Bits8
 
 parse_psk_binders_with_fuel :
   ℕ →
   List Bits8 →
-  Either String (List psk_binder)
+  Either String (List PskBinder)
 parse_psk_binders_with_fuel _ [] = Right []
 parse_psk_binders_with_fuel 0 _ =
   Left "PSK binder parser exhausted its input bound"
@@ -84,22 +84,22 @@ parse_psk_binders_with_fuel (S fuel) (declared_length :: rest) =
             Left problem => Left problem
             Right binders => Right (MkPskBinder binder :: binders)
 
-parse_psk_binders : List Bits8 → Either String (List psk_binder)
+parse_psk_binders : List Bits8 → Either String (List PskBinder)
 parse_psk_binders bytes =
   parse_psk_binders_with_fuel (length bytes) bytes
 
 public export
-record offered_psks where
+record OfferedPsks where
   constructor MkOfferedPsks
-  offered_psk_identities : List psk_identity
-  offered_psk_binders : List psk_binder
+  offered_psk_identities : List PskIdentity
+  offered_psk_binders : List PskBinder
 
 public export
-offered_psk_count : offered_psks → ℕ
+offered_psk_count : OfferedPsks → ℕ
 offered_psk_count (MkOfferedPsks identities _) = length identities
 
 public export
-parse_client_pre_shared_key : tls_extension → Either String offered_psks
+parse_client_pre_shared_key : TlsExtension → Either String OfferedPsks
 parse_client_pre_shared_key extension =
   if extension.extension_type_code /= pre_shared_key_code
     then Left "expected pre_shared_key extension"

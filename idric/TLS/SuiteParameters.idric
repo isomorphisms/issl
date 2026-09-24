@@ -23,7 +23,7 @@ choice tls13_aead_algorithm one_of
   aes_128_ccm_8
 
 public export
-record suite_parameters where
+record SuiteParameters where
   constructor MkSuiteParameters
   suite_aead : tls13_aead_algorithm
   suite_hash : tls13_hash_algorithm
@@ -32,7 +32,7 @@ record suite_parameters where
   suite_tag_length : ℕ
 
 public export
-parameters_for_suite : tls13_cipher_suite → suite_parameters
+parameters_for_suite : tls13_cipher_suite → SuiteParameters
 parameters_for_suite tls_aes_128_gcm_sha256 =
   MkSuiteParameters aes_128_gcm sha256 16 12 16
 parameters_for_suite tls_aes_256_gcm_sha384 =

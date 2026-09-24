@@ -55,7 +55,7 @@ tls13_label_prefix : List Bits8
 tls13_label_prefix = [116, 108, 115, 49, 51, 32]
 
 public export
-record hkdf_label where
+record HkdfLabel where
   constructor MkHkdfLabel
   hkdf_output_length : ℕ
   hkdf_purpose : tls13_kdf_purpose
@@ -66,7 +66,7 @@ make_hkdf_label :
   ℕ →
   tls13_kdf_purpose →
   List Bits8 →
-  Either String hkdf_label
+  Either String HkdfLabel
 make_hkdf_label output_length purpose context =
   if output_length > 65535
     then Left "TLS HKDF output length exceeds uint16"
@@ -81,7 +81,7 @@ u16_bytes number =
   ]
 
 public export
-encode_hkdf_label : hkdf_label → List Bits8
+encode_hkdf_label : HkdfLabel → List Bits8
 encode_hkdf_label (MkHkdfLabel output_length purpose context) =
   let complete_label = tls13_label_prefix ++ kdf_purpose_bytes purpose in
     u16_bytes output_length ++
